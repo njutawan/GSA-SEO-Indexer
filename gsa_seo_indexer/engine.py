@@ -33,6 +33,7 @@ APP_NAME = "GSA SEO Indexer Clone"
 APP_VERSION = "1.0.0"
 APP_DEVELOPER = "RIZAL DRAG"
 APP_YEAR = "2026"
+APP_URL = "https://github.com/njutawan/GSA-SEO-Indexer"
 APP_DESCRIPTION = (
     "A from-scratch reimplementation of the mechanism behind GSA SEO "
     "Indexer v3.09, recovered through reverse engineering with Ghidra.\n"

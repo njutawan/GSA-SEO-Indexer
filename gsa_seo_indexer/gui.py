@@ -9,6 +9,7 @@ from __future__ import annotations
 import queue
 import threading
 import tkinter as tk
+import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 from urllib.parse import urlparse
@@ -1635,6 +1636,25 @@ class IndexerApp(tk.Tk):
         ttk.Separator(frm, orient="horizontal").pack(fill="x", pady=(0, 10))
         ttk.Label(frm, text=f"Developed by {engine.APP_DEVELOPER}").pack()
         ttk.Label(frm, text=f"© {engine.APP_YEAR}").pack(pady=(2, 10))
+        link = ttk.Label(
+            frm,
+            text=engine.APP_URL,
+            foreground="#0066cc",
+            cursor="hand2",
+        )
+        link.pack()
+        link.bind(
+            "<Button-1>",
+            lambda _e: webbrowser.open_new(engine.APP_URL),
+        )
+        link.bind(
+            "<Enter>",
+            lambda _e: link.configure(foreground="#004499", font=("Segoe UI", 9, "underline")),
+        )
+        link.bind(
+            "<Leave>",
+            lambda _e: link.configure(foreground="#0066cc", font=("Segoe UI", 9)),
+        )
         ttk.Label(frm, text=engine.APP_DESCRIPTION, justify="center", wraplength=380).pack()
         ttk.Button(frm, text="Close", command=win.destroy).pack(pady=(14, 0))
         win.bind("<Escape>", lambda _e: win.destroy())

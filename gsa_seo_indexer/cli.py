@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--version",
         action="version",
         version=f"{engine.APP_NAME} v{engine.APP_VERSION}\n"
-        f"Developed by {engine.APP_DEVELOPER} © {engine.APP_YEAR}",
+        f"Developed by {engine.APP_DEVELOPER} © {engine.APP_YEAR}\n{engine.APP_URL}",
     )
     sub = p.add_subparsers(dest="command", required=True)
 
