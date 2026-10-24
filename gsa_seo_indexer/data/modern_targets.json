@@ -1,0 +1,23 @@
+{
+  "_comment": "Endpoint modern (2024-2026) yang meng-anchor target URL sebagai link nyata. Berbeda dari list GSA 2019-2023 yang sebagian besar sudah mati. Diverifikasi live pada 2026-10-21.",
+  "targets": [
+    {"url": "https://web.archive.org/web/{url}", "mode": "append", "note": "Wayback Machine - halaman arsip menyimpan target sebagai link"},
+    {"url": "https://search.marginalia.nu/search?query={enc}", "mode": "append", "note": "Marginalia - search engine kecil yang meng-index halaman_RESULT sebagai link"},
+    {"url": "https://www.mojeek.com/search?q={enc}", "mode": "append", "note": "Mojeek - meng-anchor hasil pencarian"},
+    {"url": "https://html.duckduckgo.com/html/?q={enc}", "mode": "append", "note": "DuckDuckGo html - result page meng-anchor target"},
+    {"url": "https://search.naver.com/search.naver?query={enc}", "mode": "append", "note": "Naver - meng-anchor hasil"},
+    {"url": "https://search.seznam.cz/?q={enc}", "mode": "append", "note": "Seznam - meng-anchor hasil"},
+    {"url": "https://www.tumblr.com/widgets/share/tool?canonicalUrl={enc}", "mode": "append", "note": "Tumblr share - canonicalUrl jadi link outbound"},
+    {"url": "https://www.linkedin.com/sharing/share-offsite/?url={enc}", "mode": "append", "note": "LinkedIn share-offsite"},
+    {"url": "https://www.qwant.com/?q={enc}", "mode": "append", "note": "Qwant - result page"},
+    {"url": "https://searx.be/search?q={enc}", "mode": "append", "note": "SearXNG instance"},
+    {"url": "https://yandex.com/search/?text={enc}", "mode": "append", "note": "Yandex"},
+    {"url": "https://www.startpage.com/sp/search?query={enc}", "mode": "append", "note": "Startpage"},
+    {"url": "https://www.baidu.com/s?wd={enc}", "mode": "append", "note": "Baidu"},
+    {"url": "https://pinterest.com/pin/create/button/?url={enc}", "mode": "append", "note": "Pinterest create - url jadi link"},
+    {"url": "https://www.reddit.com/submit?url={enc}", "mode": "append", "note": "Reddit submit"},
+    {"url": "https://api.microlink.io/?url={enc}", "mode": "append", "note": "Microlink metadata API"},
+    {"url": "https://www.bing.com/search?q={enc}", "mode": "append", "note": "Bing"},
+    {"url": "https://www.google.com/search?q={enc}", "mode": "append", "note": "Google"}
+  ]
+}

@@ -1,0 +1,29 @@
+CODE 00401000 size 3678208
+read n=3678208
+  NOT FOUND: websnapr.com
+  NOT FOUND: grapher.compete.com
+  NOT FOUND: quantcast.com
+  NOT FOUND: siteanalytics.compete.com
+  NOT FOUND: api.thumbalizr.com
+  NOT FOUND: open.thumbshots.org
+  NOT FOUND: pagepeeker.com
+  NOT FOUND: traffic.alexa.com
+  NOT FOUND: alexa.com
+  NOT FOUND: siteadvisor.com
+  NOT FOUND: majesticseo.com
+  NOT FOUND: cycounter
+  NOT FOUND: /siteinfo/
+  NOT FOUND: /sites/
+  NOT FOUND: /graph
+  NOT FOUND: /charts/backlinks-discovery
+  NOT FOUND: /trends/viz?q=
+  NOT FOUND: [Statistics Only]
+  NOT FOUND: [Redirect Only]
+  NOT FOUND: Submitting to Indexing Services
+  NOT FOUND: pr_cache.dat
+  NOT FOUND: last_queue.txt
+  NOT FOUND: http://www.yandex.ru/cycounter?
+found 0
+functions=9209
+
+#### FUNCS 0

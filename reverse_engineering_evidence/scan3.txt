@@ -1,0 +1,39 @@
+
+### FUN_0071b19c @71b19c  (4 hits)
+    Importing URLs...
+    Importing URLs... "
+    www.
+    http://
+
+### FUN_00723338 @723338  (9 hits)
+    HTTP%
+    HTTP:%
+    noindex
+    siteanalytics.compete.com
+    /siteinfo/
+    siteadvisor.com
+    /sites/
+    /charts/backlinks-discovery
+    [Statistics Only]
+
+### FUN_007278b4 @7278b4  (4 hits)
+    http://
+    https://
+    You want to use proxies but didn't have working proxies added. Please check!
+    URL not valid
+
+### FUN_0072c990 @72c990  (8 hits)
+    check url
+    deep link indexer only
+    report with link type
+    use site filter
+    site filter
+    indexer emulation
+    index emulation host
+    indexer config
+
+### FUN_0072e004 @72e004  (4 hits)
+    Site
+    Sites to use
+    Filter by Site (ON)
+    Filter by Site (OFF)

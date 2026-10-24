@@ -1,0 +1,17 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyc
+*.log
+
+# Runtime outputs (regenerated per run)
+gsa_seo_indexer/host_cache.json
+gsa_seo_indexer/reports/
+gsa_seo_indexer/keys.json
+
+# Reverse-engineering scratch / evidence working dir (not part of product)
+work/
+
+# OS
+.DS_Store
+Thumbs.db
