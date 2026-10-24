@@ -25,11 +25,12 @@ from .engine import (
     read_url_file,
     validate_url,
 )
+from .paths import resource_dir, runtime_dir
 
-HERE = Path(__file__).resolve().parent
+HERE = runtime_dir()
 REPORT_DIR = HERE / "reports"
 CONFIG_PATH = HERE / "config.ini"
-SERVICE_DIR = HERE / "index_service"
+SERVICE_DIR = resource_dir() / "index_service"
 QUEUE_PATH = HERE / "last_queue.txt"
 
 # Light/dark palettes.  Tag colors differ per theme so the Link column
@@ -1708,7 +1709,7 @@ class IndexerApp(tk.Tk):
             if holder["server"] is not None:
                 return
             cfg = emu_mod.build_config(
-                HERE / "index_service",
+                SERVICE_DIR,
                 host=host.get().strip() or emu_mod.DEFAULT_HOST,
                 port=int(port.get() or emu_mod.DEFAULT_PORT),
                 with_auth=auth.get(),

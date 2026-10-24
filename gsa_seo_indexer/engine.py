@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Iterator, Sequence
 
 from .httpclient import PooledHttpClient
+from .paths import resource_dir, runtime_dir
 from .perf import DnsCache, HostCache, activate_dns_cache, deactivate_dns_cache, host_of, port_of
 
 APP_NAME = "GSA SEO Indexer Clone"
@@ -41,8 +42,8 @@ APP_DESCRIPTION = (
     "6.671 legacy ping sites + 18 verified modern targets, plus 48 "
     "configurable index services."
 )
-DATA_DIR = Path(__file__).resolve().parent / "data"
-CACHE_DIR = Path(__file__).resolve().parent
+DATA_DIR = resource_dir() / "data"
+CACHE_DIR = runtime_dir()
 
 # --------------------------------------------------------------------------
 # Ping targets

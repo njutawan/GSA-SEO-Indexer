@@ -19,11 +19,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .paths import runtime_dir
+
 # Where the user's paid-service credentials live: {service: {variable: value}}.
 # It is a separate file rather than a config.ini section so the GSA-style
 # config stays shareable and no key is written into a settings file that
 # the GUI round-trips on every save.
-KEYS_PATH = Path(__file__).resolve().parent / "keys.json"
+KEYS_PATH = runtime_dir() / "keys.json"
 
 
 @dataclass

@@ -10,12 +10,13 @@ from pathlib import Path
 
 from . import engine, emulator as emu_mod, proxies as proxy_mod, services as service_mod
 from .engine import Indexer, PingTarget, Settings, default_targets, load_ping_sites, read_url_file
+from .paths import resource_dir, runtime_dir
 from .watcher import UrlWatcher
 
-HERE = Path(__file__).resolve().parent
+HERE = runtime_dir()
 CONFIG_PATH = HERE / "config.ini"
 REPORT_DIR = HERE / "reports"
-SERVICE_DIR = HERE / "index_service"
+SERVICE_DIR = resource_dir() / "index_service"
 
 
 def build_parser() -> argparse.ArgumentParser:
