@@ -1,23 +1,540 @@
 {
-  "_comment": "Endpoint modern (2024-2026) yang meng-anchor target URL sebagai link nyata. Berbeda dari list GSA 2019-2023 yang sebagian besar sudah mati. Diverifikasi live pada 2026-10-21.",
-  "targets": [
-    {"url": "https://web.archive.org/web/{url}", "mode": "append", "note": "Wayback Machine - halaman arsip menyimpan target sebagai link"},
-    {"url": "https://search.marginalia.nu/search?query={enc}", "mode": "append", "note": "Marginalia - search engine kecil yang meng-index halaman_RESULT sebagai link"},
-    {"url": "https://www.mojeek.com/search?q={enc}", "mode": "append", "note": "Mojeek - meng-anchor hasil pencarian"},
-    {"url": "https://html.duckduckgo.com/html/?q={enc}", "mode": "append", "note": "DuckDuckGo html - result page meng-anchor target"},
-    {"url": "https://search.naver.com/search.naver?query={enc}", "mode": "append", "note": "Naver - meng-anchor hasil"},
-    {"url": "https://search.seznam.cz/?q={enc}", "mode": "append", "note": "Seznam - meng-anchor hasil"},
-    {"url": "https://www.tumblr.com/widgets/share/tool?canonicalUrl={enc}", "mode": "append", "note": "Tumblr share - canonicalUrl jadi link outbound"},
-    {"url": "https://www.linkedin.com/sharing/share-offsite/?url={enc}", "mode": "append", "note": "LinkedIn share-offsite"},
-    {"url": "https://www.qwant.com/?q={enc}", "mode": "append", "note": "Qwant - result page"},
-    {"url": "https://searx.be/search?q={enc}", "mode": "append", "note": "SearXNG instance"},
-    {"url": "https://yandex.com/search/?text={enc}", "mode": "append", "note": "Yandex"},
-    {"url": "https://www.startpage.com/sp/search?query={enc}", "mode": "append", "note": "Startpage"},
-    {"url": "https://www.baidu.com/s?wd={enc}", "mode": "append", "note": "Baidu"},
-    {"url": "https://pinterest.com/pin/create/button/?url={enc}", "mode": "append", "note": "Pinterest create - url jadi link"},
-    {"url": "https://www.reddit.com/submit?url={enc}", "mode": "append", "note": "Reddit submit"},
-    {"url": "https://api.microlink.io/?url={enc}", "mode": "append", "note": "Microlink metadata API"},
-    {"url": "https://www.bing.com/search?q={enc}", "mode": "append", "note": "Bing"},
-    {"url": "https://www.google.com/search?q={enc}", "mode": "append", "note": "Google"}
-  ]
+ "_comment": "Endpoint modern (2024-2026) yang meng-anchor target URL sebagai link nyata. Berbeda dari list GSA 2019-2023 yang sebagian besar sudah mati. Diverifikasi live pada 2026-10-21.",
+ "targets": [
+  {
+   "url": "https://web.archive.org/web/{url}",
+   "mode": "append",
+   "note": "Wayback Machine - halaman arsip menyimpan target sebagai link"
+  },
+  {
+   "url": "https://search.marginalia.nu/search?query={enc}",
+   "mode": "append",
+   "note": "Marginalia - search engine kecil yang meng-index halaman_RESULT sebagai link"
+  },
+  {
+   "url": "https://www.mojeek.com/search?q={enc}",
+   "mode": "append",
+   "note": "Mojeek - meng-anchor hasil pencarian"
+  },
+  {
+   "url": "https://html.duckduckgo.com/html/?q={enc}",
+   "mode": "append",
+   "note": "DuckDuckGo html - result page meng-anchor target"
+  },
+  {
+   "url": "https://search.naver.com/search.naver?query={enc}",
+   "mode": "append",
+   "note": "Naver - meng-anchor hasil"
+  },
+  {
+   "url": "https://search.seznam.cz/?q={enc}",
+   "mode": "append",
+   "note": "Seznam - meng-anchor hasil"
+  },
+  {
+   "url": "https://www.tumblr.com/widgets/share/tool?canonicalUrl={enc}",
+   "mode": "append",
+   "note": "Tumblr share - canonicalUrl jadi link outbound"
+  },
+  {
+   "url": "https://www.linkedin.com/sharing/share-offsite/?url={enc}",
+   "mode": "append",
+   "note": "LinkedIn share-offsite"
+  },
+  {
+   "url": "https://www.qwant.com/?q={enc}",
+   "mode": "append",
+   "note": "Qwant - result page"
+  },
+  {
+   "url": "https://searx.be/search?q={enc}",
+   "mode": "append",
+   "note": "SearXNG instance"
+  },
+  {
+   "url": "https://yandex.com/search/?text={enc}",
+   "mode": "append",
+   "note": "Yandex"
+  },
+  {
+   "url": "https://www.startpage.com/sp/search?query={enc}",
+   "mode": "append",
+   "note": "Startpage"
+  },
+  {
+   "url": "https://www.baidu.com/s?wd={enc}",
+   "mode": "append",
+   "note": "Baidu"
+  },
+  {
+   "url": "https://pinterest.com/pin/create/button/?url={enc}",
+   "mode": "append",
+   "note": "Pinterest create - url jadi link"
+  },
+  {
+   "url": "https://www.reddit.com/submit?url={enc}",
+   "mode": "append",
+   "note": "Reddit submit"
+  },
+  {
+   "url": "https://api.microlink.io/?url={enc}",
+   "mode": "append",
+   "note": "Microlink metadata API"
+  },
+  {
+   "url": "https://www.bing.com/search?q={enc}",
+   "mode": "append",
+   "note": "Bing"
+  },
+  {
+   "url": "https://www.google.com/search?q={enc}",
+   "mode": "append",
+   "note": "Google"
+  },
+  {
+   "url": "http://cine.astalaweb.net/_inicio/Marco.asp?dir={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://ditu.google.com/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://freegamelibrary.net/cgi-bin/votec/votec.cgi?mode=com&p_co=%3Ca+href%3D%22{enc}%22%3E{{DOMAIN}}%3C%2Fa%3E",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://images.google.al/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://images.google.co.cr/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://images.google.co.uz/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://images.google.com.ai/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://images.google.com.cu/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://images.google.com.eg/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://images.google.com.et/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://images.google.com.pa/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://images.google.dj/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://images.google.fm/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://images.google.ga/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://images.google.gl/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://images.google.la/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://mobile-bbs.com/bbs/kusyon_b.php?{enc}=",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://www.google.bt/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://www.google.by/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://www.google.com.py/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://www.google.iq/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://www.google.md/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://www.google.mk/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://www.google.ps/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://www.google.sr/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "http://www.google.tm/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://anonym.es/?{url}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://arquivo.pt/services/archivepagenow?url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://arquivo.pt/url/search?q={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://arquivo.pt/wayback/{url}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://check-host.net/check-dns?host={url}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://check-host.net/check-http?host={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://check-host.net/check-http?host={url}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://check-host.net/check-ping?host={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://check-host.net/check-ping?host={url}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://check-host.net/check-tcp?host={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://check-host.net/check-tcp?host={url}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://check-host.net/check-udp?host={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://check-host.net/check-udp?host={url}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://check-host.net/ip-info?host={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://check-host.net/ip-info?host={url}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://cleantalk.org/website-malware-scanner?url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://coccoc.com/search?query={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://crawlercheck.com/?q={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://cse.google.com/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://ghostarchive.org/search?term={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://github.com/backlink-generator-tool?tab=repositories&q={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://images.google.am/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://images.google.as/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://images.google.ba/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://images.google.bs/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://images.google.co.ke/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://images.google.co.ve/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://images.google.com.tj/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://images.google.dz/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://images.google.jo/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://images.google.ml/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://images.google.ne/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://images.google.so/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://images.google.st/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://jigsaw.w3.org/css-validator/validator?profile=css21&warning=0&uri={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://onfry.com/social/?url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://onlineornot.com/website-down-checker?requestId=&url={url}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://onlineornot.com/website-down-checker?url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://pushtokindle.fivefilters.org/send.php?url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://ready.to/search/en/?sna=Free%20Backlink%20Generator%20%7C%20Find%20High-Quality&prf={enc}&des=Free%20Backlink%20Generator%20%7C%20Find%20High-Quality&img=R0lGODlhEAAQAOMAAMzMzOzu9GRmXExORJyenISGhDw2NMS+rNze1LzW5JyGPKzCxOTi3LTO1MSWDAQCBCH5BAEAAAAALAAAAAAQABAAAARwEMgJgqAYD1Jy5sHgYUYQcKMEmsZ4DGWAJIVxUYShCHOSLILBgCFhDBSKhS%2FRaAgcg1thAGU2m09HC1B4Cq6FwqKg0Ko2hcZCJyAQkCKJoA0sQ52bCcNQd%2FgVNR0UGwaFhgZxFAJbiowTDwQZDA8TEQA7&in=utf&ou=ono&mod=pn",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://search.criminalip.io/domain/search?query={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://search.internetsucks.net/?q={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://search.minakoe.jp/rsss/rsss.asp?qry=sitelink%3A{enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://search.mycotrip.tech/?q={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://seocheki.net/site-check.php?u={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://sitecheck.sucuri.net/results/{url}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://updownradar.com/?q={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://urlquery.net/search?q={enc}&view=",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://urlquery.net/search?q={enc}&view=&type=reports",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://validator.w3.org/nu/?doc={enc}%2F",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://web-arhive.ru/archive?url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://web-arhive.ru/search?url={enc}&sin=TXT",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://websquash.com/cgi-bin/search/search.pl?Mode=AnonAdd&b_submit=1&Realm=Internet&URL={enc}&EMAIL=backlink.generator.tool%40gmail.com",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://websquash.com/cgi-bin/search/search.pl?Terms={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://whois.gandi.net/en/results?search={enc}%2F",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://whois.net.ng/check_availability?domain={enc}%2F",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://www.accessibilitychecker.org/audit/?website={enc}&flag=us",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://www.addtoany.com/subscribe?linkname=&linkurl={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://www.domainregistry.com/rdap/?domain={enc}%2F",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://www.google.com.uy/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://www.google.mg/url?sa=t&url={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://www.semrush.com/analytics/overview/?q={enc}%2F&searchType=domain",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  },
+  {
+   "url": "https://www.who-hosts-this.com/?s={enc}",
+   "mode": "append",
+   "note": "fresh 2026-10-25: 2xx + target echoed in body"
+  }
+ ]
 }

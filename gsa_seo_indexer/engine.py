@@ -31,7 +31,7 @@ from .paths import resource_dir, runtime_dir
 from .perf import DnsCache, HostCache, activate_dns_cache, deactivate_dns_cache, host_of, port_of
 
 APP_NAME = "GSA SEO Indexer Clone"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 APP_DEVELOPER = "RIZAL DRAG"
 APP_YEAR = "2026"
 APP_URL = "https://github.com/njutawan/GSA-SEO-Indexer"

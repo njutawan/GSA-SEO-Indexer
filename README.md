@@ -96,7 +96,7 @@ situs-situs yang sudah terindeks dan sering dirayapi — **digital footprint** d
 
 **Tiga jalur submission** (dipulihkan dari binary):
 
-1. **Ping ke situs statistik** (gratis) — 6.671 situs hasil recovery dari `pr_cache.dat`
+1. **Ping ke situs statistik** (gratis) — 11.661 situs (recovery `pr_cache.dat` + harvest list publik 2026-10-25, semua diverifikasi hidup)
 2. **Index service berbayar** — 48 definisi `.ini` (format GSA asli) dengan API key
 3. **Emulator** — server HTTP lokal di `127.0.0.1:8787` yang menyimulasikan service berbayar
 
@@ -112,7 +112,7 @@ situs-situs yang sudah terindeks dan sering dirayapi — **digital footprint** d
 - **Filter bar** — dropdown (All/Backlinks/Listed/Echo/Failed/Skipped) + pencarian `Ctrl+F`
 - **Minimize to tray** — via `Shell_NotifyIconW` (tidak butuh dependensi), restore otomatis
 - **Resume run terputus** — antrian disimpan ke `last_queue.txt`, ditawarkan saat launch
-- **Pemilih target** — radio Legacy (6.671 situs) / Modern (18 endpoint) / Both
+- **Pemilih target** — radio Legacy (11.661 situs) / Modern (107 endpoint) / Both
 - **Custom mode** — batasi ke N situs pertama (mapping `custom mode` config asli)
 - **Deep links only** — hanya kirim ke situs yang menerima URL halaman dalam
 - **Crawl online** — seed URL → crawl → kumpulkan link ke antrian (padanan TForm11)
@@ -205,8 +205,8 @@ gsa_seo_indexer/
 ├── watcher.py            pemantau file untuk URL baru
 ├── perf.py               DNS cache, host cache, connection pooling
 ├── data/
-│   ├── ping_sites.txt    6.671 situs ping (2019–2023)
-│   └── modern_targets.json  18 endpoint (2024–2026)
+│   ├── ping_sites.txt    11.661 situs ping (recovery + harvest, semua live)
+│   └── modern_targets.json  107 endpoint (18 terverifikasi ketat + 89 echo)
 ├── index_service/        48 definisi INI (format GSA asli)
 └── reports/              output CSV/JSON
 ```

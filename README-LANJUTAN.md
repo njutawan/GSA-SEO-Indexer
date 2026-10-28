@@ -50,8 +50,8 @@ Grup **Sources** punya radio **Targets: Legacy / Modern / Both**:
 
 | Pilihan | Target | Catatan |
 |---|---|---|
-| Legacy | 6.671 situs (13.356 bentuk URL) | daftar hasil recovery dari program asli (2019-2023) |
-| Modern | 18 endpoint terverifikasi | yield backlink asli ~37× lebih tinggi per request |
+| Legacy | 11.661 situs (23.336 bentuk URL) | recovery `pr_cache.dat` + harvest list publik (2026-10-25), 100% HTTP-live |
+| Modern | 107 endpoint (18 terverifikasi ketat + 89 echo) | yield backlink asli ~37× lebih tinggi per request |
 | Both | gabungan keduanya | setara CLI `--modern` tanpa `--no-legacy` |
 
 ### Custom mode

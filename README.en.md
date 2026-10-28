@@ -97,7 +97,7 @@ that are already indexed and frequently crawled — a real **digital footprint**
 
 **Three submission paths** (recovered from the binary):
 
-1. **Ping to statistics sites** (free) — 6,671 sites recovered from `pr_cache.dat`
+1. **Ping to statistics sites** (free) — 11,661 sites (recovered from `pr_cache.dat` + public-list harvest 2026-10-25, all verified alive)
 2. **Paid index services** — 48 `.ini` definitions (original GSA format) with API keys
 3. **Emulator** — local HTTP server at `127.0.0.1:8787` simulating paid services
 
@@ -113,7 +113,7 @@ that are already indexed and frequently crawled — a real **digital footprint**
 - **Filter bar** — dropdown (All/Backlinks/Listed/Echo/Failed/Skipped) + `Ctrl+F` search
 - **Minimize to tray** — via `Shell_NotifyIconW` (no dependencies needed), auto-restore
 - **Resume interrupted runs** — queue saved to `last_queue.txt`, offered on next launch
-- **Target picker** — radio Legacy (6,671 sites) / Modern (18 endpoints) / Both
+- **Target picker** — radio Legacy (11,661 sites) / Modern (107 endpoints) / Both
 - **Custom mode** — limit to first N sites (maps the original `custom mode` config)
 - **Deep links only** — only send to sites that accept in-page URLs
 - **Crawl online** — seed URL → crawl → collect links into queue (TForm11 equivalent)
@@ -206,8 +206,8 @@ gsa_seo_indexer/
 ├── watcher.py            file watcher for new URLs
 ├── perf.py               DNS cache, host cache, connection pooling
 ├── data/
-│   ├── ping_sites.txt    6,671 ping sites (2019–2023)
-│   └── modern_targets.json  18 endpoints (2024–2026)
+│   ├── ping_sites.txt    11,661 ping sites (recovery + harvest, all live)
+│   └── modern_targets.json  107 endpoints (18 strict + 89 echo-verified)
 ├── index_service/        48 INI definitions (original GSA format)
 └── reports/              CSV/JSON output
 ```
