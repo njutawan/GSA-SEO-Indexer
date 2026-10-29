@@ -1,24 +1,62 @@
 <div align="center">
 
-# 🧲 GSA SEO Indexer — Clone
+<table cellpadding="8"><tr><td align="center" style="border:2px solid #34d399; border-radius:999px; padding:10px 28px;">
+<sub>📘 <b>README</b></sub> &nbsp;·&nbsp;
+<sub>🧭 <a href="#-kontribusi">Kontribusi</a></sub> &nbsp;·&nbsp;
+<sub>⚖️ <a href="#%EF%B8%8F-etika--batasan">Etika</a></sub> &nbsp;·&nbsp;
+<sub>📜 <a href="#-lisensi">Lisensi</a></sub>
+</td></tr></table>
 
-**Reimplementasi dari nol — bukan copy-paste, tapi rekayasa balik yang dihormati.**
+<br>
 
-Klon Python murni (standard library, **zero dependency**) dari mekanisme *GSA SEO Indexer v3.09*.
-Program ini mengirim URL target ke ribuan situs statistik/whois/network-log yang rajin di-crawler
-Googlebot & Bingbot, sehingga target muncul sebagai backlink di domain ber-otoritas tinggi.
+<table width="100%"><tr>
+<td bgcolor="#0f1117" align="center" style="padding:46px 20px 42px; border-radius:18px;">
 
-Mekanisme dipulihkan dengan **Ghidra + REA MCP** dari binary asli. Tidak ada kode, binary, atau
-resource milik GSA yang dipakai — hanya pengetahuan tentang cara kerjanya.
+<p style="margin:0; color:#6b7280; font-size:12px; letter-spacing:5px;"><b>— PIKIRKAN · KIRIMKAN · TERINDEKS —</b></p>
+
+<h1 style="margin:10px 0 0; font-size:52px; color:#ffffff; line-height:1.05; letter-spacing:-2px;">GSA&nbsp;<span style="color:#34d399;">INDEXER</span><span style="color:#34d399;">.</span></h1>
+
+<p style="margin:14px 0 0; color:#d1d5db; font-size:19px;"><i>Pikirkan. Kirimkan. Terindeks.</i>&nbsp;💚</p>
+
+<p style="margin:18px auto 0; color:#9ca3af; font-size:15px; line-height:1.65; max-width:680px;">
+Klon Python murni — <b>zero dependency</b> — dari mekanisme <b>GSA SEO Indexer v3.09</b>.<br>
+Mengirim URL Anda ke ribuan situs statistik/whois yang rajin di-crawler Googlebot &amp; Bingbot,<br>
+sehingga target muncul sebagai backlink di domain ber-otoritas tinggi.
+</p>
+
+<table cellpadding="0" cellspacing="0" align="center" style="margin-top:28px;"><tr>
+<td align="center" style="padding:0 26px;">
+<p style="margin:0; color:#34d399; font-size:26px; font-weight:700;">11.661</p>
+<p style="margin:2px 0 0; color:#6b7280; font-size:11px; letter-spacing:2px;">SITUS PING</p>
+</td>
+<td style="padding:0 0 0 26px; border-left:1px solid #2a2f3a;">
+<p style="margin:0; color:#34d399; font-size:26px; font-weight:700;">107</p>
+<p style="margin:2px 0 0; color:#6b7280; font-size:11px; letter-spacing:2px;">ENDPOINT MODERN</p>
+</td>
+<td style="padding:0 0 0 26px; border-left:1px solid #2a2f3a;">
+<p style="margin:0; color:#34d399; font-size:26px; font-weight:700;">37×</p>
+<p style="margin:2px 0 0; color:#6b7280; font-size:11px; letter-spacing:2px;">LEBIH EFISIEN</p>
+</td>
+</tr></table>
+
+<p style="margin:30px 0 0; color:#6b7280; font-size:12px; letter-spacing:3px;">
+🐍 PYTHON 3.10+ &nbsp;·&nbsp; 📦 ZERO DEPENDENCY &nbsp;·&nbsp; 🪟 WINDOWS · 🐧 LINUX · 🍎 MACOS
+</p>
+
+</td></tr></table>
+
+<br>
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Dependencies](https://img.shields.io/badge/Dependencies-0-success?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-active-success?style=flat-square)
-![Version](https://img.shields.io/badge/Version-1.0.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-1.1.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey?style=flat-square)
 
-[🚀 Mulai](#-mulai) · [📡 Cara Kerja](#-cara-kerja) · [✨ Fitur](#-fitur) · [📊 Hasil Ukur](#-hasil-ukur) · [⚖️ Etika](#%EF%B8%8F-etika--batasan)
+<br>
+
+[🚀 Mulai](#-mulai) · [📡 Cara Kerja](#-cara-kerja) · [✨ Fitur](#-fitur) · [📊 Hasil Ukur](#-hasil-ukur) · [⚖️ Etika](#%EF%B8%8F-etika--batasan) · [🏗️ Struktur](#-struktur-proyek) · [🔬 RE](#-reverse-engineering) · [📖 Dokumentasi CLI](README-LANJUTAN.md)
 
 </div>
 
@@ -37,6 +75,29 @@ resource milik GSA yang dipakai — hanya pengetahuan tentang cara kerjanya.
 ---
 
 ## 🚀 Mulai
+
+### Instalasi via pip
+
+Langsung dari GitHub — tanpa download atau clone manual:
+
+```bash
+pip install git+https://github.com/njutawan/GSA-SEO-Indexer.git
+```
+
+Setelah terpasang, jalankan sebagai command global:
+
+```bash
+gsa-seo-indexer --version
+gsa-seo-indexer submit --url https://example.com/
+
+# Setelah dipublikasikan ke PyPI, cukup:
+# pip install gsa-seo-indexer
+```
+
+> 📦 Tetap **zero dependency** — murni standard library, tidak perlu `pip install` tambahan.
+> 💾 State (`config.ini`, `keys.json`, `host_cache.json`, `reports/`) disimpan di folder user
+> (Windows: `%APPDATA%\GSA-SEO-Indexer`), bukan di site-packages — jadi aman saat upgrade.
+> 🖥️ GUI tetap dijalankan dengan `python -m gsa_seo_indexer`.
 
 ### Prasyarat
 

@@ -4,6 +4,9 @@ __pycache__/
 *.pyc
 *.log
 
+# Python packaging artifacts
+*.egg-info/
+
 # Runtime outputs (regenerated per run)
 gsa_seo_indexer/host_cache.json
 gsa_seo_indexer/reports/

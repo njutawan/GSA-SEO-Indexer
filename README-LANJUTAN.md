@@ -32,6 +32,16 @@
 
  Kebutuhan: **Python 3.10+**, tanpa dependensi pihak ketiga.
 
+**Instalasi via pip (CLI global) — langsung dari GitHub:**
+
+```bash
+pip install git+https://github.com/njutawan/GSA-SEO-Indexer.git
+gsa-seo-indexer --version
+gsa-seo-indexer submit --url https://example.com/
+```
+
+**Atau jalan dari source:**
+
 ```bash
 git clone https://github.com/njutawan/GSA-SEO-Indexer.git
 cd GSA-SEO-Indexer
@@ -39,6 +49,10 @@ python -m gsa_seo_indexer        # GUI
 ```
 
 Launcher Windows: `start_gui.bat` (GUI), `start_cli.bat` (CLI), `run_demo.bat` (demo).
+
+> 💾 Saat di-install via pip, state (`config.ini`, `keys.json`, `host_cache.json`, `reports/`)
+> disimpan di folder user (Windows: `%APPDATA%\GSA-SEO-Indexer`) — bukan di site-packages,
+> jadi aman saat upgrade. Data situs ping & index service tetap dibaca dari dalam package.
 
 ---
 
