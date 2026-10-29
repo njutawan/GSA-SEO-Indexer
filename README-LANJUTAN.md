@@ -95,6 +95,17 @@ program asli juga bisa dibaca langsung.
 Setting engine yang lebih dalam ada di **Options → Advanced settings…**. Dua kunci tambahan:
 `persist host cache` (default aktif) dan `dns cache` (default aktif).
 
+### Proxy (Scrape / Load / Test)
+
+Frame **Proxies** di jendela utama punya tiga tombol:
+
+* **Scrape** — unduh daftar proxy publik, uji semuanya, isi kolom dengan yang hidup.
+* **Load...** — muat file `.txt` berisi proxy (satu per baris; `#` = komentar) ke kolom.
+* **Test** — uji isi kolom saat ini: proxy mati dibuang dari kolom, dan saklar *Use*
+  mati otomatis kalau tak ada yang lolos.
+
+Alur yang disarankan: **Load...** → **Test** → Start.
+
 ### Indexing services
 
 **Options → Indexing services…** adalah manajer sungguhan: daftar 48 definisi service,
@@ -175,6 +186,10 @@ python -m gsa_seo_indexer.cli submit -f urls.txt --batch 10
 # lewat proxy
 python -m gsa_seo_indexer.cli submit -f urls.txt --use-proxy --proxy 1.2.3.4:8080
 
+# uji proxy dulu sebelum run; yang mati dibuang,
+# kalau semua mati run jalan TANPA proxy
+python -m gsa_seo_indexer.cli submit -f urls.txt --proxy-file proxies.txt --test-proxies
+
 # cek apakah URL bisa diindeks
 python -m gsa_seo_indexer.cli check --url https://example.com/
 
@@ -206,8 +221,9 @@ python -m gsa_seo_indexer.cli watch -f backlinks.log --sites 50
 
 `engine.Indexer` menerima daftar URL dan daftar target, lalu:
 
-1. **Cek URL** (bisa dimatikan dengan `--no-check`): request `GET`; URL ditolak bila HTTP ≥ 400
-   atau halaman berisi `noindex`.
+1. **Cek URL** (bisa dimatikan dengan `--no-check`): request `GET`; URL ditolak bila halaman
+   berisi `noindex`, HTTP 404/410/451 (halaman hilang — tidak ada yang bisa diindeks), atau
+   HTTP ≥ 500. Kode 401/403/405/429 dianggap *reachable* (halaman ada tapi menolak pembacaan).
 2. **Submit** ke setiap target sesuai `mode`:
    - `append` → `http://host/path` + `http://target/` (tanpa encoding)
    - `query` → `http://host/?url=` + URL-encoded target
@@ -307,8 +323,27 @@ python -m gsa_seo_indexer.cli submit -f urls.txt --connect-timeout 4 --read-time
 
 ## Proxy
 
-Empat sumber daftar proxy publik dipakai (~80.000 kandidat per scrape), dan proxy yang lolos
-diuji **dua kali**: konektivitas umum, lalu terhadap URL target yang sebenarnya.
+**Alur proxy masuk ke program** — ada empat pintu, dan hanya hasil scrape yang otomatis diuji:
+
+| Sumber | Diuji hidup/mati dulu? |
+|---|---|
+| `--scrape-proxies N` / tombol **Scrape** (GUI) | ✅ ya (tes konektivitas ke `https://www.gstatic.com/generate_204`) |
+| `--proxy host:port` (CLI) | ❌ dipercaya langsung |
+| `--proxy-file` (CLI) / tombol **Load...** (GUI) | ❌ dipercaya langsung |
+| `proxy list` di `config.ini` | ❌ dipercaya langsung |
+
+Proxy manual bisa diuji pra-run dengan `--test-proxies` (CLI) atau tombol **Test** di frame
+Proxies (GUI): semua proxy yang terkumpul diuji paralel, hanya yang menjawab yang dipakai.
+Kalau **semua** gagal, run tetap jalan **tanpa proxy** (diberi tahu di output) — bukan
+membakar ribuan request lewat proxy mati. Proxy SOCKS4/SOCKS5 disaring sebelum run karena
+engine hanya mendukung proxy HTTP.
+
+Selama run, penentuan hidup/mati yang sesungguhnya terjadi secara *lazy*: proxy yang gagal
+(timeout, koneksi putus, HTTP 407/429/5xx) langsung di-*retire* dari pool untuk sisa run,
+dan kalau seluruh pool habis, pool di-reset sekali. Kegagalan karena proxy tidak pernah
+menandai host target mati.
+
+Empat sumber daftar proxy publik dipakai (~80.000 kandidat per scrape). Hasil ukur:
 
 | Metrik | Langsung | Lewat proxy |
 |---|---|---|
@@ -319,10 +354,13 @@ diuji **dua kali**: konektivitas umum, lalu terhadap URL target yang sebenarnya.
 **2,9× lebih lambat dan menghasilkan lebih sedikit backlink.** Jalur proxy **tidak menjadi
 default** — ia ada untuk kasus ketika IP asli Anda diblokir, bukan untuk kecepatan.
 
-Dua jebakan yang ditemukan:
+Jebakan yang ditemukan:
 
 * **Proxy gagal ≠ host target mati.** Kegagalan dari proxy tidak menandai host target mati.
 * SSL context harus dipasang pada **handler**, bukan lewat kwarg `context=` di `open()`.
+* **TLS verify-first (v1.2.0):** koneksi HTTPS mencoba verifikasi sertifikat dulu; fallback
+  tanpa verifikasi hanya untuk host berantai rusak/self-signed, dan keputusan itu diingat
+  per host selama 1 jam. Berlaku untuk jalur langsung maupun lewat tunnel proxy.
 
 ---
 

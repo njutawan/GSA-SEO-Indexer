@@ -50,7 +50,7 @@ sehingga target muncul sebagai backlink di domain ber-otoritas tinggi.
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Dependencies](https://img.shields.io/badge/Dependencies-0-success?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-active-success?style=flat-square)
-![Version](https://img.shields.io/badge/Version-1.1.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-1.2.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey?style=flat-square)
 
@@ -179,6 +179,7 @@ situs-situs yang sudah terindeks dan sering dirayapi — **digital footprint** d
 - **Crawl online** — seed URL → crawl → kumpulkan link ke antrian (padanan TForm11)
 - **Import & preview** — edit daftar URL sebelum run, dedupe, hitung duplikat/invalid
 - **Manajer index service** — 48 layanan, toggle enabled, set API key, test, run all
+- **Uji proxy pra-run** — Load... (txt) → **Test** (buang proxy mati sebelum run) → Start
 
 </details>
 
@@ -196,8 +197,8 @@ watch       # pantau file & submit URL baru otomatis
 crawl       # crawl situs untuk URL baru
 ```
 
-Flag penting: `--threads`, `--proxy`, `--report`, `--modern`, `--batch`, `--fast`,
-`--preflight`, `--delay`, `--use-proxy`, `--scrape-proxies`, `--depth`
+Flag penting: `--threads`, `--proxy`, `--proxy-file`, `--test-proxies`, `--report`, `--modern`,
+`--batch`, `--fast`, `--preflight`, `--delay`, `--use-proxy`, `--scrape-proxies`, `--depth`
 
 </details>
 
@@ -207,7 +208,10 @@ Flag penting: `--threads`, `--proxy`, `--report`, `--modern`, `--batch`, `--fast
 - 🧠 **Deteksi backlink ketat** — echo query string, `mailto:`, link relatif tidak dihitung
 - 💀 **Cache host mati** — host gagal dicatat, request berikutnya dilewatkan (1.26× lebih cepat)
 - 🌐 **DNS cache** — resolve sekali per host per run
-- 🔌 **Proxy rotation** — 4 sumber publik (~80.000 kandidat), validasi 2 tahap
+- 🔌 **Proxy rotation + uji pra-run** — 4 sumber publik (~80.000 kandidat), proxy manual
+  bisa diuji dulu (`--test-proxies` / tombol **Test**); yang mati dibuang sebelum run
+- 🛡️ **TLS verify-first** — sertifikat diverifikasi dulu; fallback tanpa verifikasi hanya
+  untuk host berantai rusak (diingat per host, TTL 1 jam)
 - 📊 **Laporan** — CSV & JSON, opsional dengan kolom `Indexable`
 - 🎛️ **config.ini** — key meniru config asli GSA, bisa baca `config.ini` GSA langsung
 - 🔐 **API key terpisah** — `keys.json`, tidak pernah ditulis ke laporan
@@ -264,7 +268,7 @@ gsa_seo_indexer/
 ├── proxies.py            proxy scraper + tester
 ├── crawler.py            crawl situs untuk URL
 ├── watcher.py            pemantau file untuk URL baru
-├── perf.py               DNS cache, host cache, connection pooling
+├── perf.py               DNS cache, host cache, TLS helper
 ├── data/
 │   ├── ping_sites.txt    11.661 situs ping (recovery + harvest, semua live)
 │   └── modern_targets.json  107 endpoint (18 terverifikasi ketat + 89 echo)
