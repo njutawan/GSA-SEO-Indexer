@@ -24,17 +24,19 @@ _installed = None
 
 
 def _is_installed() -> bool:
-    """True when this package is pip-installed (dist-info present), i.e. not
-    a plain source checkout."""
+    """True when this very file is imported from site-packages, i.e. the
+    pip-installed copy rather than a source checkout.
+
+    Distribution metadata alone is not a safe signal: a source checkout that
+    carries (or runs next to) ``gsa_seo_indexer.egg-info`` makes the
+    distribution discoverable from that directory without anything being
+    installed, which used to flip the runtime dir to the OS user-data
+    folder and silently read/write the wrong config.ini.
+    """
     global _installed
     if _installed is None:
-        try:
-            import importlib.metadata as md
-
-            md.distribution("gsa-seo-indexer")
-            _installed = True
-        except Exception:
-            _installed = False
+        here = str(Path(__file__).resolve()).lower()
+        _installed = "site-packages" in here or "dist-packages" in here
     return _installed
 
 

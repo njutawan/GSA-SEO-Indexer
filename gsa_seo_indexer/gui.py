@@ -7,6 +7,7 @@ the right, a URL list, a progress bar and the live ``Q:`` / ``LpM:`` counters.
 from __future__ import annotations
 
 import queue
+import sys
 import threading
 import tkinter as tk
 import webbrowser
@@ -82,6 +83,14 @@ class IndexerApp(tk.Tk):
         self.geometry("780x520")
         self.minsize(700, 420)
 
+        # window/taskbar icon; the .exe file icon itself comes from the spec
+        ico = resource_dir() / "assets" / "app.ico"
+        if ico.exists():
+            try:
+                self.iconbitmap(str(ico))
+            except tk.TclError:
+                pass
+
         # config.ini is shared with the CLI: whatever was saved last time
         # (threads, proxies, target list, ...) comes back on launch.
         self.settings = Settings.load(CONFIG_PATH)
@@ -122,8 +131,9 @@ class IndexerApp(tk.Tk):
         self.var_search = tk.StringVar(value="")
         self.var_filter = tk.StringVar(value="All")
         self.var_shown = tk.StringVar(value="0 rows")
-        self._all_rows: list[str] = []      # iids in insertion order
+        self._all_rows: list[str] = []      # iids in display (sorted) order
         self._row_tag: dict[str, str] = {}  # iid -> row tag
+        self._sort_desc: dict[str, bool] = {}
 
         self._setup_style()
         self._build()
@@ -176,8 +186,14 @@ class IndexerApp(tk.Tk):
         style.configure("TProgressbar", background="#2f7dd1", troughcolor=p["fieldbg"],
                         bordercolor=p["border"], lightcolor="#2f7dd1", darkcolor="#2f7dd1")
         style.configure("Treeview", background=p["fieldbg"], foreground=p["fg"],
-                        fieldbackground=p["fieldbg"], rowheight=24,
-                        bordercolor=p["border"])
+                        fieldbackground=p["fieldbg"], bordercolor=p["border"])
+        # row height follows the display DPI so text does not clip when the
+        # process is DPI-aware (24 px is the 100%-scaling baseline)
+        try:
+            row_h = max(24, round(24 * self.winfo_fpixels("1i") / 96))
+        except (tk.TclError, ZeroDivisionError):
+            row_h = 24
+        style.configure("Treeview", rowheight=row_h)
         style.configure("Treeview.Heading", background=p["field"], foreground=p["fg"],
                         bordercolor=p["border"], relief="flat")
         style.configure("Hint.TLabel", background=p["bg"], foreground=p["disabled"])
@@ -272,24 +288,24 @@ class IndexerApp(tk.Tk):
         ttk.Spinbox(
             run_frame, from_=1, to=200, textvariable=self.var_threads, width=6
         ).pack(side="left", padx=(4, 12))
-        ttk.Checkbutton(
-            run_frame, text="Check URL first", variable=self.var_check
-        ).pack(side="left")
-        ttk.Checkbutton(
-            run_frame, text="Statistics only", variable=self.var_stats_only
-        ).pack(side="left", padx=8)
-        ttk.Checkbutton(
-            run_frame, text="Custom", variable=self.var_custom
-        ).pack(side="left", padx=(6, 2))
+        w = ttk.Checkbutton(run_frame, text="Check URL first", variable=self.var_check)
+        w.pack(side="left")
+        self._tip(w, "Verify the target answers before spending requests on it.")
+        w = ttk.Checkbutton(run_frame, text="Statistics only", variable=self.var_stats_only)
+        w.pack(side="left", padx=8)
+        self._tip(w, "Submit only to the authority statistics hosts - much faster, fewer real links.")
+        w = ttk.Checkbutton(run_frame, text="Custom", variable=self.var_custom)
+        w.pack(side="left", padx=(6, 2))
+        self._tip(w, "Limit the ping list to its first N sites (the original's custom mode).")
         ttk.Spinbox(
             run_frame, from_=1, to=9999, textvariable=self.var_custom_number, width=5
         ).pack(side="left", padx=(0, 6))
-        ttk.Checkbutton(
-            run_frame, text="Fast (1 req/host)", variable=self.var_fast
-        ).pack(side="left", padx=8)
-        ttk.Checkbutton(
-            run_frame, text="Repair misses", variable=self.var_repair
-        ).pack(side="left", padx=8)
+        w = ttk.Checkbutton(run_frame, text="Fast (1 req/host)", variable=self.var_fast)
+        w.pack(side="left", padx=8)
+        self._tip(w, "One request per host (query form) instead of the query+append pair.")
+        w = ttk.Checkbutton(run_frame, text="Repair misses", variable=self.var_repair)
+        w.pack(side="left", padx=8)
+        self._tip(w, "Re-submit targets that failed in the first pass.")
 
         # Row 2: Sources | Proxies | Batch side by side
         sources_row = ttk.Frame(opts_outer)
@@ -309,39 +325,43 @@ class IndexerApp(tk.Tk):
         ttk.Label(filt, text="Filter host:").pack(side="left")
         # explicit width keeps the frame's *minimum* small now that the
         # deep-links checkbox shares this row; expand=True still grows it
-        ttk.Entry(filt, textvariable=self.var_site_filter, width=14).pack(
-            side="left", fill="x", expand=True, padx=(4, 0)
-        )
+        ent = ttk.Entry(filt, textvariable=self.var_site_filter, width=14)
+        ent.pack(side="left", fill="x", expand=True, padx=(4, 0))
+        self._tip(ent, "Keep only ping sites whose URL contains this text.")
         # "deep link indexer only" in the original's config; the elastic
         # filter entry yields the space, so the frame's minimum barely moves
-        ttk.Checkbutton(
-            filt, text="Deep links only", variable=self.var_deep_link
-        ).pack(side="left", padx=(6, 0))
+        w = ttk.Checkbutton(filt, text="Deep links only", variable=self.var_deep_link)
+        w.pack(side="left", padx=(6, 0))
+        self._tip(w, "Only sites that index inner pages (drops the legacy ping list).")
 
         proxy_frame = ttk.LabelFrame(sources_row, text="Proxies", padding=(8, 4))
         proxy_frame.pack(side="left", fill="x", expand=True, padx=(4, 4))
-        ttk.Checkbutton(proxy_frame, text="Use", variable=self.var_use_proxy).pack(side="left")
+        w = ttk.Checkbutton(proxy_frame, text="Use", variable=self.var_use_proxy)
+        w.pack(side="left")
+        self._tip(w, "Send requests through the proxies in this field.")
         # explicit width keeps this frame's *minimum* small; expand=True
         # still grows it whenever the window has room
-        ttk.Entry(proxy_frame, textvariable=self.var_proxy, width=12).pack(
+        ttk.Entry(proxy_frame, textvariable=self.var_proxy, width=10).pack(
             side="left", fill="x", expand=True, padx=(4, 4)
         )
-        ttk.Button(proxy_frame, text="Scrape", command=self._scrape_proxies, width=8).pack(
-            side="left", padx=2
-        )
-        ttk.Button(proxy_frame, text="Load...", command=self._load_proxy_file, width=8).pack(
-            side="left", padx=2
-        )
-        ttk.Button(proxy_frame, text="Test", command=self._test_proxies, width=8).pack(
-            side="left", padx=2
-        )
+        # auto-sized ttk buttons measure a uniform 82 px on this theme, so
+        # tight explicit widths are what keep Sources|Proxies|Batch <= 780
+        w = ttk.Button(proxy_frame, text="Scrape", command=self._scrape_proxies, width=6)
+        w.pack(side="left", padx=1)
+        self._tip(w, "Collect fresh public proxies and keep the ones that answer.")
+        w = ttk.Button(proxy_frame, text="Load...", command=self._load_proxy_file, width=5)
+        w.pack(side="left", padx=1)
+        self._tip(w, "Load a proxy list from a file (one per line, # comments allowed).")
+        w = ttk.Button(proxy_frame, text="Test", command=self._test_proxies, width=5)
+        w.pack(side="left", padx=1)
+        self._tip(w, "Test the proxies in the field now; only working ones stay.")
 
         batch_frame = ttk.LabelFrame(sources_row, text="Batch", padding=(8, 4))
         batch_frame.pack(side="left", fill="x", expand=True, padx=(4, 0))
         ttk.Label(batch_frame, text="URLs/request:").pack(side="left")
-        ttk.Entry(batch_frame, textvariable=self.var_batch, width=5).pack(
-            side="left", padx=(4, 0)
-        )
+        ent = ttk.Entry(batch_frame, textvariable=self.var_batch, width=5)
+        ent.pack(side="left", padx=(4, 0))
+        self._tip(ent, "URLs packed into one request (0 = engine default).")
 
         # Progress bar + validated line
         progress_frame = ttk.Frame(self, padding=(8, 0, 8, 0))
@@ -367,13 +387,16 @@ class IndexerApp(tk.Tk):
         self.filter_box.bind("<<ComboboxSelected>>", lambda _e: self._apply_result_filter())
         self.search_entry = ttk.Entry(filter_bar, textvariable=self.var_search, width=28)
         self.search_entry.pack(side="left")
+        self._tip(self.search_entry, "Filter rows by any column (Ctrl+F).")
         # a write trace fires on typing, paste, and programmatic changes alike
         self.var_search.trace_add("write", lambda *_a: self._apply_result_filter())
         ttk.Label(filter_bar, text="Search Target/Site/Link…", style="Hint.TLabel").pack(
             side="left", padx=(4, 0)
         )
         ttk.Label(filter_bar, textvariable=self.var_shown).pack(side="right")
-        ttk.Button(filter_bar, text="Clear", width=6, command=self._clear_filter).pack(side="right", padx=6)
+        btn = ttk.Button(filter_bar, text="Clear", width=6, command=self._clear_filter)
+        btn.pack(side="right", padx=6)
+        self._tip(btn, "Reset the result filter.")
 
         # Results tree: Target | Host | Link | Code | ms
         list_frame = ttk.Frame(self, padding=(8, 4, 8, 4))
@@ -397,6 +420,10 @@ class IndexerApp(tk.Tk):
         # Color tags for the Link column (reconfigured per theme in _setup_style)
         for tag in ("indexed", "listed", "echo", "failed", "skipped"):
             self.tree.tag_configure(tag)
+        for col in ("target", "host", "link", "code", "ms"):
+            self.tree.heading(col, command=lambda _c=col: self._sort_results(_c))
+        self.tree.bind("<Button-3>", self._show_result_menu)
+        self.tree.bind("<Control-c>", lambda _e: self._copy_selected_rows())
         sc = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=sc.set)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -462,6 +489,100 @@ class IndexerApp(tk.Tk):
         "failed": "Failed",
         "skipped": "Skipped",
     }
+
+    SORT_LABELS = {"target": "Target URL", "host": "Site", "link": "Link",
+                   "code": "Code", "ms": "ms"}
+    LINK_RANK = {"indexed": 0, "listed": 1, "echo": 2, "failed": 3, "skipped": 4}
+
+    def _tip(self, widget: tk.Widget, text: str) -> None:
+        """Bind a lightweight tooltip to a widget, colored at show time."""
+        state: dict = {"win": None}
+
+        def show(_event) -> None:
+            if state["win"] is not None or not text:
+                return
+            p = self._palette
+            win = tk.Toplevel(self)
+            win.wm_overrideredirect(True)
+            tk.Label(win, text=text, justify="left", padding=(8, 4),
+                     background=p["accent"], foreground=p["bg"]).pack()
+            win.update_idletasks()
+            x = min(widget.winfo_rootx() + 10,
+                    win.winfo_screenwidth() - win.winfo_reqwidth() - 8)
+            y = widget.winfo_rooty() + widget.winfo_height() + 8
+            win.wm_geometry(f"+{x}+{y}")
+            state["win"] = win
+
+        def hide(_event=None) -> None:
+            if state["win"] is not None:
+                state["win"].destroy()
+                state["win"] = None
+
+        widget.bind("<Enter>", show, add="+")
+        widget.bind("<Leave>", hide, add="+")
+        widget.bind("<ButtonPress>", hide, add="+")
+
+    def _sort_results(self, col: str) -> None:
+        """Order the result rows by a column; click the same column again
+        to reverse.
+
+        ``_all_rows`` is the display order, so sorting just reorders that
+        list and ``_apply_result_filter`` reattaches everything in one
+        pass.  Rows arriving later are appended, not merged into the sort.
+        """
+        # an unclicked column counts as "descending" so the first click sorts ascending
+        new_desc = not self._sort_desc.get(col, True)
+        self._sort_desc = {col: new_desc}
+        if col in ("code", "ms"):
+            def key(iid: str):
+                try:
+                    return int(self.tree.set(iid, col))
+                except (ValueError, TypeError, tk.TclError):
+                    return -1
+        elif col == "link":
+            def key(iid: str):
+                return self.LINK_RANK.get(self._row_tag.get(iid, ""), 9)
+        else:
+            def key(iid: str):
+                return str(self.tree.set(iid, col)).lower()
+        self._all_rows.sort(key=key, reverse=new_desc)
+        for c, label in self.SORT_LABELS.items():
+            arrow = ""
+            if c in self._sort_desc:
+                arrow = "  ▼" if self._sort_desc[c] else "  ▲"
+            self.tree.heading(c, text=label + arrow)
+        self._apply_result_filter()
+
+    def _show_result_menu(self, event) -> None:
+        """Context menu for result rows: copy without a full export."""
+        iid = self.tree.identify_row(event.y)
+        if not iid:
+            return
+        if iid not in self.tree.selection():
+            self.tree.selection_set(iid)
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(label="Copy row(s) as TSV", command=self._copy_selected_rows)
+        menu.add_command(
+            label="Copy target URL(s)",
+            command=lambda: self._copy_selected_rows(column="target"),
+        )
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _copy_selected_rows(self, column: str = "") -> str:
+        """Copy the selected rows (whole line as TSV, or one column)."""
+        rows = [self.tree.set(iid) for iid in self.tree.selection()]
+        if rows:
+            if column:
+                lines = [str(r.get(column, "")) for r in rows]
+            else:
+                lines = ["\t".join(str(v) for v in r.values()) for r in rows]
+            self.clipboard_clear()
+            self.clipboard_append("\n".join(lines))
+            self.var_status.set(f"Copied {len(lines)} row(s) to the clipboard")
+        return "break"
 
     def _row_matches(self, iid: str) -> bool:
         mode = self.var_filter.get()
@@ -1810,7 +1931,28 @@ class IndexerApp(tk.Tk):
         self.destroy()
 
 
+def _enable_windows_dpi_awareness() -> None:
+    """Ask Windows to render at the native DPI instead of bitmap-stretching.
+
+    Must run before the Tk root exists.  SYSTEM_DPI_AWARE keeps scaling
+    simple and reliable for a single-window app; without it every font is
+    blurred on 125/150% scaled displays.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)
+    except (AttributeError, OSError):
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except OSError:
+            pass
+
+
 def main() -> None:
+    _enable_windows_dpi_awareness()
     app = IndexerApp()
     app.mainloop()
 

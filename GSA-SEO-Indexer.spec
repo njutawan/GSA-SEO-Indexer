@@ -13,6 +13,7 @@ a = Analysis(
     datas=[
         ("gsa_seo_indexer/data", "gsa_seo_indexer/data"),
         ("gsa_seo_indexer/index_service", "gsa_seo_indexer/index_service"),
+        ("gsa_seo_indexer/assets", "gsa_seo_indexer/assets"),
     ],
     hiddenimports=["gsa_seo_indexer.__main__"],
     hookspath=[],
@@ -58,5 +59,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=None,
+    icon="gsa_seo_indexer/assets/app.ico",
 )

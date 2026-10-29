@@ -30,7 +30,7 @@ from .httpclient import PooledHttpClient, needs_ssl_fallback, remember_ssl_fallb
 from .paths import resource_dir, runtime_dir
 from .perf import DnsCache, HostCache, activate_dns_cache, deactivate_dns_cache, host_of, port_of
 
-APP_NAME = "GSA SEO Indexer Clone"
+APP_NAME = "GSA Indexer"
 APP_VERSION = "1.1.0"
 APP_DEVELOPER = "RIZAL DRAG"
 APP_YEAR = "2026"
@@ -39,7 +39,7 @@ APP_DESCRIPTION = (
     "A from-scratch reimplementation of the mechanism behind GSA SEO "
     "Indexer v3.09, recovered through reverse engineering with Ghidra.\n"
     "Pure standard-library Python - no third-party dependencies.\n"
-    "6.671 legacy ping sites + 18 verified modern targets, plus 48 "
+    "11,661 legacy ping sites + 107 verified modern targets, plus 48 "
     "configurable index services."
 )
 DATA_DIR = resource_dir() / "data"
