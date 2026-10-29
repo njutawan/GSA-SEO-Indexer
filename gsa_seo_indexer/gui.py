@@ -361,6 +361,8 @@ class IndexerApp(tk.Tk):
         ttk.Label(batch_frame, text="URLs/request:").pack(side="left")
         ent = ttk.Entry(batch_frame, textvariable=self.var_batch, width=5)
         ent.pack(side="left", padx=(4, 0))
+        self._batch_entry = ent
+        ent.bind("<FocusOut>", self._validate_batch)
         self._tip(ent, "URLs packed into one request (0 = engine default).")
 
         # Progress bar + validated line
@@ -425,9 +427,15 @@ class IndexerApp(tk.Tk):
         self.tree.bind("<Button-3>", self._show_result_menu)
         self.tree.bind("<Control-c>", lambda _e: self._copy_selected_rows())
         sc = ttk.Scrollbar(list_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=sc.set)
-        self.tree.pack(side="left", fill="both", expand=True)
+        hsc = ttk.Scrollbar(list_frame, orient="horizontal", command=self.tree.xview)
+        self.tree.configure(yscrollcommand=sc.set, xscrollcommand=hsc.set)
         sc.pack(side="right", fill="y")
+        hsc.pack(side="bottom", fill="x")
+        self.tree.pack(side="left", fill="both", expand=True)
+        # long target URLs clip at column width; the hover row shows the
+        # full line, the bar above scrolls when the window is narrower
+        # than the columns need
+        self._bind_row_tooltip()
 
         # Status bar
         bottom = ttk.Frame(self, padding=(8, 4, 8, 8))
@@ -583,6 +591,70 @@ class IndexerApp(tk.Tk):
             self.clipboard_append("\n".join(lines))
             self.var_status.set(f"Copied {len(lines)} row(s) to the clipboard")
         return "break"
+
+    def _bind_row_tooltip(self) -> None:
+        """Hover a result row to read it in full (theme-colored bubble)."""
+        state: dict = {"iid": None, "win": None, "after": None}
+
+        def hide() -> None:
+            if state["win"] is not None:
+                state["win"].destroy()
+                state["win"] = None
+            if state["after"] is not None:
+                self.after_cancel(state["after"])
+                state["after"] = None
+
+        def show(iid: str) -> None:
+            try:
+                vals = self.tree.set(iid)
+            except tk.TclError:
+                return
+            text = "\n".join(
+                str(vals.get(col, "")) for col in ("target", "host", "link") if vals.get(col, "")
+            )
+            if not text:
+                return
+            p = self._palette
+            win = tk.Toplevel(self)
+            win.wm_overrideredirect(True)
+            tk.Label(win, text=text, justify="left", padding=(8, 4),
+                     background=p["accent"], foreground=p["bg"]).pack()
+            win.update_idletasks()
+            x, y = self.winfo_pointerxy()
+            x = min(x + 14, win.winfo_screenwidth() - win.winfo_reqwidth() - 8)
+            win.wm_geometry(f"+{x}+{y + 16}")
+            state["win"] = win
+
+        def on_motion(event) -> None:
+            iid = self.tree.identify_row(event.y)
+            if iid != state["iid"]:
+                hide()
+                state["iid"] = iid
+                if iid:
+                    state["after"] = self.after(600, lambda: show(iid))
+
+        def on_leave(_event) -> None:
+            hide()
+            state["iid"] = None
+
+        self.tree.bind("<Motion>", on_motion, add="+")
+        self.tree.bind("<Leave>", on_leave, add="+")
+        # scrolling moves rows under a stationary cursor; drop the bubble
+        self.tree.bind("<MouseWheel>", lambda _e: hide(), add="+")
+
+    def _validate_batch(self, *_a) -> None:
+        """On focus-out, snap the batch field back to a non-negative number.
+
+        ``_sync_settings`` falls back to 0 for garbage, but silently running
+        with the engine default while the field still shows ``10a`` is a
+        trap - correct the field itself and say why.
+        """
+        raw = self.var_batch.get().strip()
+        if raw.isdigit():
+            return
+        self.var_batch.set("0")
+        if raw:
+            self.var_status.set("Batch: not a number - reset to 0 (0 = engine default)")
 
     def _row_matches(self, iid: str) -> bool:
         mode = self.var_filter.get()
