@@ -26,7 +26,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, Sequence
 
-from .httpclient import PooledHttpClient
+from .httpclient import PooledHttpClient, needs_ssl_fallback, remember_ssl_fallback
 from .paths import resource_dir, runtime_dir
 from .perf import DnsCache, HostCache, activate_dns_cache, deactivate_dns_cache, host_of, port_of
 
@@ -498,7 +498,7 @@ class Indexer:
                 self._good_proxies.remove(proxy)
             self._retired.add(proxy)
 
-    def _opener(self, proxy: str | None) -> urllib.request.OpenerDirector:
+    def _opener(self, proxy: str | None, verify: bool = True) -> urllib.request.OpenerDirector:
         """Build an opener for one request.
 
         urllib opens a fresh connection per request, so the TCP and TLS
@@ -506,9 +506,13 @@ class Indexer:
         time.  An ``http.client`` session would keep the connection
         alive, but urllib does not expose that; the per-host connection
         pool in :mod:`.perf` is used instead when it is enabled.
+
+        ``verify`` selects a context that checks certificates; the
+        unverified context is only a fallback (see ``_urlopen``).
         """
+        ctx = ssl.create_default_context() if verify else self._ssl_ctx
         handlers: list[urllib.request.BaseHandler] = [
-            urllib.request.HTTPSHandler(context=self._ssl_ctx),
+            urllib.request.HTTPSHandler(context=ctx),
         ]
         if proxy:
             handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
@@ -517,6 +521,30 @@ class Indexer:
         if not self.settings.follow_redirects:
             handlers.append(_NoRedirect())
         return urllib.request.build_opener(*handlers)
+
+    def _urlopen(self, req, proxy: str | None, timeout: float):
+        """Open ``req`` with certificate verification, retrying once without
+        it only when the server's chain fails verification.
+
+        This is the urllib counterpart of ``httpclient._connect_https``:
+        most ping hosts carry broken/self-signed chains, so a hard
+        requirement would drop them, while never verifying leaves every
+        submission open to a man-in-the-middle proxy.
+        """
+        if needs_ssl_fallback(req.host):
+            return self._opener(proxy, verify=False).open(req, timeout=timeout)
+        try:
+            return self._opener(proxy, verify=True).open(req, timeout=timeout)
+        except (ssl.SSLCertVerificationError, urllib.error.URLError) as exc:
+            # urllib wraps the underlying SSLCertVerificationError in a
+            # URLError; both mean the chain failed verification.
+            reason = getattr(exc, "reason", None)
+            if isinstance(exc, ssl.SSLCertVerificationError) or isinstance(
+                reason, ssl.SSLCertVerificationError
+            ):
+                remember_ssl_fallback(req.host)
+                return self._opener(proxy, verify=False).open(req, timeout=timeout)
+            raise
 
     # -- URL health check -------------------------------------------------
     def check_url(self, url: str) -> tuple[bool, str]:
@@ -536,12 +564,16 @@ class Indexer:
             method="GET",
         )
         try:
-            with self._opener(self._pick_proxy()).open(req, timeout=self.settings.timeout) as resp:
+            with self._urlopen(req, self._pick_proxy(), self.settings.timeout) as resp:
                 body = resp.read(120000).decode("utf-8", "replace").lower()
                 code = resp.status
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403, 405, 429):
                 return True, f"reachable but not readable ({exc.code})"
+            # A 404/410/451 means the page is missing or gone: there is
+            # nothing to index, so submitting it would just burn the run.
+            if exc.code in (404, 410, 451):
+                return False, f"HTTP {exc.code}"
             return exc.code < 500, f"HTTP {exc.code}"
         except Exception as exc:  # noqa: BLE001 - report any transport error
             return False, str(exc)[:120]
@@ -652,7 +684,7 @@ class Indexer:
             if resp.status != 0:
                 return resp.body[: self.settings.max_body_bytes], resp.status
             # the pooled client failed - fall back to urllib once
-        with self._opener(proxy).open(req, timeout=self._timeout()) as resp:
+        with self._urlopen(req, proxy, self._timeout()) as resp:
             return resp.read(self.settings.max_body_bytes).decode("utf-8", "replace"), resp.status
 
     def _timeout(self) -> float:
@@ -729,7 +761,7 @@ class Indexer:
             method="GET",
         )
         try:
-            with self._opener(self._pick_proxy()).open(req, timeout=self.settings.timeout) as resp:
+            with self._urlopen(req, self._pick_proxy(), self.settings.timeout) as resp:
                 body = resp.read(300000).decode("utf-8", "replace")
                 code = resp.status
             elapsed = int((time.perf_counter() - started) * 1000)
@@ -1096,18 +1128,6 @@ class Indexer:
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D102
         return None
-
-
-def _looks_indexed(body: str, payload: str) -> bool:
-    """Heuristic: did the page expose our target URL as a real link?
-
-    A bare echo of the query parameter does not count: the target only
-    matters when it ends up in an ``<a href>`` on the page, which is what a
-    crawler follows.  The check is deliberately strict - the anchor has to
-    point at the target host, not merely contain the target text somewhere
-    (a page full of ``example.com`` in its own markup is not a backlink).
-    """
-    return _classify_link(body, payload) == "indexed"
 
 
 # Hosts whose result pages merely *list* the target among search hits.  A

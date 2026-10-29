@@ -1,3 +1,0 @@
-  File "<stdin>", line 10
-    hosts_modern = []
-IndentationError: unexpected indent

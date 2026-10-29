@@ -60,6 +60,20 @@ class Proxy:
         return self.url
 
 
+def is_supported_proxy(proxy: str | Proxy) -> bool:
+    """True for plain HTTP(S) proxies.
+
+    SOCKS4/SOCKS5 lines are parsed (they appear in public lists) but the
+    client only speaks HTTP proxies, so they are filtered out before a
+    run instead of failing one request at a time.
+    """
+    if isinstance(proxy, Proxy):
+        return proxy.scheme in ("http", "https")
+    raw = (proxy or "").strip()
+    scheme = raw.split("://", 1)[0].lower() if "://" in raw else "http"
+    return scheme in ("http", "https")
+
+
 def parse_proxy_line(line: str) -> Proxy | None:
     """Parse one line of a proxy list."""
     line = line.strip()
@@ -155,7 +169,7 @@ def find_working_proxies(
     limit: int = 20,
     threads: int = 30,
     timeout: float = 8.0,
-    test_url: str = "http://www.gstatic.com/generate_204",
+    test_url: str = "https://www.gstatic.com/generate_204",
 ) -> list[Proxy]:
     """Test proxies concurrently and return the working ones."""
     cand = list(candidates)
@@ -175,58 +189,6 @@ def find_working_proxies(
             except Exception:
                 continue
     return found
-
-
-def test_proxy_against(
-    proxy: Proxy,
-    test_url: str,
-    timeout: float = 10.0,
-) -> bool:
-    """Check that a proxy can reach a *specific* URL.
-
-    A proxy can pass the generic connectivity test and still be refused
-    by the site that matters, so the indexer validates its proxies against
-    a real target before using them.
-    """
-    try:
-        opener = urllib.request.build_opener(
-            urllib.request.ProxyHandler({"http": proxy.url, "https": proxy.url}),
-            urllib.request.HTTPSHandler(context=_SSL_CTX),
-        )
-        req = urllib.request.Request(test_url, headers={"User-Agent": UA})
-        with opener.open(req, timeout=timeout) as resp:
-            return resp.status in (200, 204, 301, 302)
-    except Exception:
-        return False
-
-
-def validate_against_target(
-    candidates: Iterable[Proxy],
-    test_url: str,
-    limit: int = 20,
-    threads: int = 40,
-    timeout: float = 10.0,
-) -> list[Proxy]:
-    """Keep only the proxies that can reach ``test_url``."""
-    cand = list(candidates)
-    random.shuffle(cand)
-    good: list[Proxy] = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, threads)) as pool:
-        futures = {
-            pool.submit(test_proxy_against, p, test_url, timeout): p for p in cand
-        }
-        for fut in concurrent.futures.as_completed(futures):
-            p = futures[fut]
-            try:
-                if fut.result():
-                    good.append(p)
-                    if len(good) >= limit:
-                        for f in futures:
-                            f.cancel()
-                        break
-            except Exception:
-                continue
-    return good
 
 
 def scrape_proxies(limit: int = 20, **kwargs) -> list[Proxy]:

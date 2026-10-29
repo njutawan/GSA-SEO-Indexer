@@ -27,6 +27,29 @@ from urllib.parse import urlsplit
 DEFAULT_PORTS = {"http": 80, "https": 443}
 MAX_BODY = 512 * 1024
 
+# Per-host TLS fallback memory: once a host fails certificate verification,
+# later connections to it skip the verified attempt until the entry
+# expires.  Certificates can be fixed, so entries carry a TTL.
+_SSL_FALLBACK_TTL = 3600.0
+_unverified_hosts: dict[str, float] = {}
+_unverified_hosts_lock = threading.Lock()
+
+
+def needs_ssl_fallback(host: str) -> bool:
+    """True when ``host`` recently failed certificate verification."""
+    with _unverified_hosts_lock:
+        exp = _unverified_hosts.get(host)
+        return exp is not None and exp > time.monotonic()
+
+
+def remember_ssl_fallback(host: str) -> None:
+    """Remember that ``host`` failed verification (pruning expired entries)."""
+    global _unverified_hosts
+    now = time.monotonic()
+    with _unverified_hosts_lock:
+        _unverified_hosts = {h: e for h, e in _unverified_hosts.items() if e > now}
+        _unverified_hosts[host] = now + _SSL_FALLBACK_TTL
+
 
 @dataclass
 class Response:
@@ -54,6 +77,7 @@ class _Pool:
         self._ctx = ssl.create_default_context()
         self._ctx.check_hostname = False
         self._ctx.verify_mode = ssl.CERT_NONE
+        self._verify_ctx = ssl.create_default_context()
 
     # -- housekeeping ----------------------------------------------------
     def _expire(self, now: float) -> None:
@@ -264,8 +288,22 @@ class PooledHttpClient:
                 body = raw.read(MAX_BODY)
                 hdrs = {k.lower(): v for k, v in raw.getheaders()}
                 status = raw.status
-                # keep the connection only when the server allows it
-                if hdrs.get("connection", "").lower() == "close" or raw.will_close:
+                # Keep the connection only when the server allows it and the
+                # whole body was consumed.  A body larger than MAX_BODY is
+                # cut short, and the unread bytes would leak into the next
+                # request on a reused connection.
+                len_hdr = hdrs.get("content-length")
+                truncated = (
+                    len_hdr is not None
+                    and len_hdr.isdigit()
+                    and int(len_hdr) > len(body)
+                )
+                reusable = not (
+                    hdrs.get("connection", "").lower() == "close"
+                    or raw.will_close
+                    or truncated
+                )
+                if not reusable:
                     try:
                         conn.close()
                     except Exception:
@@ -291,11 +329,11 @@ class PooledHttpClient:
         if self.proxy:
             return self._connect_via_proxy(scheme, host, port)
         if scheme == "https":
-            conn = http.client.HTTPSConnection(
-                host, port, timeout=self.connect_timeout, context=self.pool._ctx
+            return _connect_https(
+                host, port, self.connect_timeout,
+                self.pool._verify_ctx, self.pool._ctx,
             )
-        else:
-            conn = http.client.HTTPConnection(host, port, timeout=self.connect_timeout)
+        conn = http.client.HTTPConnection(host, port, timeout=self.connect_timeout)
         conn.connect()
         return conn
 
@@ -310,16 +348,20 @@ class PooledHttpClient:
 
         raw = self.proxy or ""
         p = urlsplit(raw if "//" in raw else f"//{raw}")
+        p_scheme = (p.scheme or "http").lower()
+        if p_scheme not in ("http", "https"):
+            raise ValueError(
+                f"unsupported proxy scheme {p_scheme!r} (only http/https proxies work)"
+            )
         p_host = p.hostname or ""
-        p_port = p.port or (1080 if p.scheme == "socks5" else 8080)
+        p_port = p.port or 8080
 
         if scheme == "https":
-            conn = http.client.HTTPSConnection(
-                p_host, p_port, timeout=self.connect_timeout, context=self.pool._ctx
+            return _connect_https(
+                host, port, self.connect_timeout,
+                self.pool._verify_ctx, self.pool._ctx,
+                proxy_host=p_host, proxy_port=p_port,
             )
-            conn.set_tunnel(host, port)
-            conn.connect()
-            return conn
 
         conn = http.client.HTTPConnection(p_host, p_port, timeout=self.connect_timeout)
         conn.connect()
@@ -327,6 +369,51 @@ class PooledHttpClient:
 
     def close(self) -> None:
         self.pool.close()
+
+
+def _connect_https(
+    host: str,
+    port: int,
+    timeout: float,
+    verified_ctx: ssl.SSLContext,
+    unverified_ctx: ssl.SSLContext,
+    proxy_host: str = "",
+    proxy_port: int = 0,
+) -> http.client.HTTPSConnection:
+    """Connect with certificate verification, retrying once without it only
+    when the server's chain fails verification.
+
+    Most hosts in the recovered ping list carry broken or self-signed
+    chains, so requiring verification would drop them; never verifying
+    leaves every submission open to a man-in-the-middle proxy.  Trying
+    the verified context first keeps the healthy majority protected.
+    """
+    last_error: BaseException | None = None
+    candidates = (
+        (unverified_ctx,) if needs_ssl_fallback(host)
+        else (verified_ctx, unverified_ctx)
+    )
+    for ctx in candidates:
+        if proxy_host:
+            conn = http.client.HTTPSConnection(
+                proxy_host, proxy_port, timeout=timeout, context=ctx
+            )
+            conn.set_tunnel(host, port)
+        else:
+            conn = http.client.HTTPSConnection(host, port, timeout=timeout, context=ctx)
+        try:
+            conn.connect()
+            return conn
+        except ssl.SSLCertVerificationError as exc:
+            last_error = exc
+            remember_ssl_fallback(host)
+            try:
+                conn.close()
+            except Exception:
+                pass
+    if last_error is None:
+        raise RuntimeError("TLS connect failed without an error")
+    raise last_error
 
 
 def _join(base: str, location: str) -> str:

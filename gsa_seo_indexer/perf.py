@@ -22,8 +22,8 @@ Two observations drive the optimisations here:
    every URL of a run hits the same hosts again.  Resolving and connecting
    once per host and reusing that is a large saving.
 
-This module provides the two pieces that implement that: a host liveness
-cache and a per-host connection pool.
+This module provides the host liveness cache and the DNS cache that
+implement that.
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ from __future__ import annotations
 import json
 import os
 import socket
-import ssl
 import threading
 import time
 from dataclasses import dataclass, field
@@ -311,83 +310,6 @@ def activate_dns_cache(cache: DnsCache) -> None:
 def deactivate_dns_cache() -> None:
     global _active_dns
     _active_dns = None
-
-
-# --------------------------------------------------------------------------
-# Connection pool
-# --------------------------------------------------------------------------
-class ConnectionPool:
-    """Keeps a few ready connections per (host, port, scheme).
-
-    Reusing a connection removes the TCP and TLS handshake from the
-    critical path, which is 34% of the request time in the profile above.
-    Servers that close an idle connection are handled by retrying once on a
-    fresh connection.
-    """
-
-    def __init__(self, max_per_host: int = 2, max_total: int = 64) -> None:
-        self.max_per_host = max_per_host
-        self.max_total = max_total
-        self._free: dict[tuple[str, int], list] = {}
-        self._lock = threading.Lock()
-        self._ctx = ssl.create_default_context()
-        self._ctx.check_hostname = False
-        self._ctx.verify_mode = ssl.CERT_NONE
-
-    def _key(self, host: str, port: int) -> tuple[str, int]:
-        return (host, port)
-
-    def get(self, host: str, port: int, timeout: float) -> socket.socket:
-        """Return a connected socket, reusing a pooled one when possible."""
-        key = self._key(host, port)
-        with self._lock:
-            bucket = self._free.get(key)
-            while bucket:
-                sock = bucket.pop()
-                try:
-                    sock.settimeout(timeout)
-                    return sock
-                except OSError:
-                    try:
-                        sock.close()
-                    except OSError:
-                        pass
-        return self._connect(host, port, timeout)
-
-    def _connect(self, host: str, port: int, timeout: float) -> socket.socket:
-        sock = socket.create_connection((host, port), timeout=timeout)
-        sock.settimeout(timeout)
-        return sock
-
-    def put(self, host: str, port: int, sock: socket.socket) -> None:
-        """Return a socket to the pool (or close it when the pool is full)."""
-        key = self._key(host, port)
-        with self._lock:
-            total = sum(len(v) for v in self._free.values())
-            if total >= self.max_total:
-                try:
-                    sock.close()
-                except OSError:
-                    pass
-                return
-            bucket = self._free.setdefault(key, [])
-            if len(bucket) >= self.max_per_host:
-                try:
-                    sock.close()
-                except OSError:
-                    pass
-                return
-            bucket.append(sock)
-
-    def close(self) -> None:
-        with self._lock:
-            for bucket in self._free.values():
-                for sock in bucket:
-                    try:
-                        sock.close()
-                    except OSError:
-                        pass
-            self._free.clear()
 
 
 def host_of(url: str) -> str:

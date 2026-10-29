@@ -30,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
   gsa-seo-indexer submit -f urls.txt --threads 20 --report reports/run.csv
   gsa-seo-indexer submit -f urls.txt --sites 200 --stats-only
   gsa-seo-indexer submit -f urls.txt --use-proxy --proxy 1.2.3.4:8080
+  gsa-seo-indexer submit -f urls.txt --proxy-file proxies.txt --test-proxies
   gsa-seo-indexer check --url https://example.com/
   gsa-seo-indexer sites --count
   gsa-seo-indexer services --list
@@ -60,7 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="per-request timeout (5s is the measured sweet spot; default: config.ini)",
     )
     s.add_argument("--delay", type=float, default=None, help="fixed delay after each request")
-    s.add_argument("--sites", type=int, default=None, help="limit number of sites (0 = all)")
+    s.add_argument("--sites", type=int, default=None, help="limit number of submission targets (0 = all; each site contributes two targets)")
     s.add_argument(
         "--batch",
         type=int,
@@ -96,7 +97,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         metavar="N",
         help="scrape N public proxies first and use them; they are validated "
-        "against a real target before use",
+        "against a live URL before use",
+    )
+    s.add_argument(
+        "--test-proxies",
+        action="store_true",
+        help="test every collected proxy (--proxy, --proxy-file, config.ini, "
+        "scraped) against a live URL before the run and keep only the ones "
+        "that answer; if all fail, the run continues WITHOUT proxies",
     )
     s.add_argument("--site-filter", default=None, help="only use sites whose host contains this text")
     s.add_argument("--no-check", action="store_true", default=None, help="skip the pre-submission URL check")
@@ -345,13 +353,39 @@ def cmd_submit(args) -> int:
         proxy_list.extend(p.url for p in scraped)
         if not args.quiet:
             print(f"  {len(scraped)} working proxy/proxies")
+    supported = [p for p in proxy_list if proxy_mod.is_supported_proxy(p)]
+    dropped = len(proxy_list) - len(supported)
+    if dropped and not args.quiet:
+        print(f"  NOTE: skipped {dropped} SOCKS proxy/proxies (only HTTP proxies are supported)")
+    proxy_list = supported
     # No proxy flag at all: fall back to the proxies saved in config.ini
     # (their use_proxy switch carries over with them).
     if not proxy_from_flags and cfg.use_proxy and cfg.proxy_list:
-        proxy_list = list(cfg.proxy_list)
+        proxy_list = [p for p in cfg.proxy_list if proxy_mod.is_supported_proxy(p)]
+        use_proxy = True
+    elif proxy_from_flags:
+        # An explicit proxy source is pointless unless it is actually used.
         use_proxy = True
     else:
         use_proxy = args.use_proxy
+
+    # Pre-run live test for manually supplied proxies (scraped ones were
+    # already tested when they were collected).  A proxy that cannot even
+    # reach the test URL would only burn timeouts inside the run.
+    if args.test_proxies and proxy_list:
+        if not args.quiet:
+            print(f"Testing {len(proxy_list)} proxy/proxies ...", flush=True)
+        parsed = [p for p in (proxy_mod.parse_proxy_line(x) for x in proxy_list) if p]
+        kept = proxy_mod.find_working_proxies(parsed, limit=max(1, len(parsed)))
+        if kept:
+            proxy_list = [p.url for p in kept]
+            if not args.quiet:
+                print(f"  {len(kept)}/{len(parsed)} proxy/proxies passed the live test")
+        else:
+            if not args.quiet:
+                print("  all proxies failed the live test - running WITHOUT proxies")
+            proxy_list = []
+            use_proxy = False
 
     settings = Settings(
         threads=threads,

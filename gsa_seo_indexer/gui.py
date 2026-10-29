@@ -332,6 +332,9 @@ class IndexerApp(tk.Tk):
         ttk.Button(proxy_frame, text="Load...", command=self._load_proxy_file, width=8).pack(
             side="left", padx=2
         )
+        ttk.Button(proxy_frame, text="Test", command=self._test_proxies, width=8).pack(
+            side="left", padx=2
+        )
 
         batch_frame = ttk.LabelFrame(sources_row, text="Batch", padding=(8, 4))
         batch_frame.pack(side="left", fill="x", expand=True, padx=(4, 0))
@@ -553,6 +556,11 @@ class IndexerApp(tk.Tk):
         self.settings.check_url = self.var_check.get()
         self.settings.use_proxy = self.var_use_proxy.get()
         proxies = [p.strip() for p in self.var_proxy.get().split(",") if p.strip()]
+        # SOCKS proxies are parsed but not usable by the engine; dropping
+        # them here keeps a run from failing one request at a time.
+        from . import proxies as proxy_mod
+
+        proxies = [p for p in proxies if proxy_mod.is_supported_proxy(p)]
         self.settings.proxy_list = proxies
         try:
             self.settings.batch_size = max(0, int(self.var_batch.get() or 0))
@@ -897,7 +905,13 @@ class IndexerApp(tk.Tk):
                 return
             proxy = None
             if use_proxies.get():
-                candidates = [p.strip() for p in self.var_proxy.get().split(",") if p.strip()]
+                from . import proxies as proxy_mod
+
+                candidates = [
+                    p.strip()
+                    for p in self.var_proxy.get().split(",")
+                    if p.strip() and proxy_mod.is_supported_proxy(p)
+                ]
                 if candidates:
                     proxy = candidates[0]
                 else:
@@ -1142,6 +1156,13 @@ class IndexerApp(tk.Tk):
                 elif kind == "proxy_error":
                     self.var_status.set("Proxy scrape failed")
                     messagebox.showerror("Proxy scrape", str(payload[0]))
+                elif kind == "proxy_tested":
+                    kept, total = payload[0], payload[1]
+                    self.var_proxy.set(", ".join(p.url for p in kept))
+                    self.var_use_proxy.set(bool(kept))
+                    self.var_status.set(
+                        f"{len(kept)}/{total} proxy/proxies passed the live test"
+                    )
                 elif kind == "error":
                     self.var_status.set("Error: " + str(payload[0]))
                     messagebox.showerror("Error", str(payload[0]))
@@ -1222,6 +1243,37 @@ class IndexerApp(tk.Tk):
                 self._events.put(("proxy_error", str(exc)))
                 return
             self._events.put(("proxy_result", found))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _test_proxies(self) -> None:
+        """Pre-run live test for the proxies typed or loaded into the field.
+
+        Scraped proxies were tested when collected; this covers the manual
+        sources (--proxy equivalents).  Only the ones that answer stay in
+        the field; if none survive, the Use switch is turned off so the run
+        does not burn every request on dead proxies.
+        """
+        from . import proxies as proxy_mod
+
+        raw = [p.strip() for p in self.var_proxy.get().split(",") if p.strip()]
+        if not raw:
+            self.var_status.set("No proxies to test")
+            return
+        parsed = [p for p in (proxy_mod.parse_proxy_line(x) for x in raw) if p]
+        if not parsed:
+            self.var_status.set("No parsable proxies to test")
+            return
+        self.var_status.set(f"Testing {len(parsed)} proxies ...")
+        self.update_idletasks()
+
+        def work() -> None:
+            try:
+                kept = proxy_mod.find_working_proxies(parsed, limit=max(1, len(parsed)))
+            except Exception as exc:  # noqa: BLE001
+                self._events.put(("proxy_error", str(exc)))
+                return
+            self._events.put(("proxy_tested", (kept, len(parsed))))
 
         threading.Thread(target=work, daemon=True).start()
 

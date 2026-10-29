@@ -31,12 +31,9 @@ import json
 import re
 import socketserver
 import threading
-import urllib.error
 import urllib.parse
-import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
 
 from .services import IndexService, load_services
 
@@ -190,6 +187,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send(401, "Unauthorized")
             return
         length = int(self.headers.get("Content-Length") or 0)
+        if length > 1_000_000:
+            self._send(413, "Payload too large")
+            return
         body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
         path = urllib.parse.urlparse(self.path).path
         svc = self.config.service_for_path(self.path, self.headers.get("Host", ""))
@@ -270,77 +270,6 @@ class IndexServiceEmulator:
 
     def __exit__(self, *exc) -> None:
         self.stop()
-
-
-def _local_endpoint(service: IndexService, base_url: str) -> str:
-    """Rewrite a service URL so it points at the local emulator.
-
-    The ``Host`` header keeps the original hostname, which is what the
-    emulator matches on, so the request still looks like it went to the
-    real service.
-    """
-    parsed = urllib.parse.urlparse(service.url)
-    if not base_url:
-        base_url = f"{parsed.scheme}://{parsed.netloc}"
-    local = urllib.parse.urlsplit(base_url)
-    path = parsed.path or "/"
-    if parsed.query:
-        path = f"{path}?{parsed.query}"
-    return urllib.parse.urlunsplit((local.scheme, local.netloc, path, "", ""))
-
-
-def submit_to_emulator(
-    service: IndexService,
-    urls: list[str],
-    base_url: str = "",
-    timeout: float = 15.0,
-) -> tuple[bool, str]:
-    """Submit URLs to a *running* emulator, addressed by its real hostname.
-
-    The original GSA emulator expects the client to talk to the real
-    service domain (the host file is rewritten so the domain resolves
-    locally).  This helper does the same thing without touching the host
-    file: it sends the request to ``base_url`` but keeps the real ``Host``
-    header, which is what the emulator matches on.
-    """
-    if not base_url:
-        parsed = urllib.parse.urlparse(service.url)
-        base_url = f"{parsed.scheme}://{parsed.netloc}"
-    endpoint = _local_endpoint(service, base_url)
-    body = service.post_data
-    if body:
-        args = {"arg1": chr(10).join(urls), "arg2": ""}
-        for name, items in service.variables.items():
-            default = items.get("default")
-            if default is not None:
-                args.setdefault(name, default)
-        body = service._substitute(body, args)
-        data = body.encode("utf-8")
-    else:
-        data = None
-
-    headers = {"User-Agent": "GSAIndexerEmulator/1.0"}
-    for k, v in service.build_headers().items():
-        headers[k] = v
-    # keep the real hostname so the emulator can route on it
-    real = urllib.parse.urlparse(service.url).netloc
-    if real:
-        headers["Host"] = real
-    if data is not None:
-        headers["Content-Type"] = (
-            "application/x-www-form-urlencoded"
-            if service.encoding == "urlencode"
-            else "application/json"
-        )
-    req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST" if data else "GET")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            text = resp.read(200000).decode("utf-8", "replace")
-            return (service.is_success(text) if service.ok_reply else True), text[:400]
-    except urllib.error.HTTPError as exc:
-        return False, f"HTTP {exc.code}"
-    except Exception as exc:  # noqa: BLE001
-        return False, str(exc)[:160]
 
 
 def build_config(
