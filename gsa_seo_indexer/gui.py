@@ -138,6 +138,9 @@ class IndexerApp(tk.Tk):
         self._setup_style()
         self._build()
         self._apply_tag_colors()
+        # clicking the title-bar X must take the same path as File > Exit:
+        # stop the worker, remove the tray icon, save the panel state
+        self.protocol("WM_DELETE_WINDOW", self._quit)
         self.after(100, self._poll)
         self.after(200, self._maybe_resume_queue)
 
