@@ -61,7 +61,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="per-request timeout (5s is the measured sweet spot; default: config.ini)",
     )
     s.add_argument("--delay", type=float, default=None, help="fixed delay after each request")
-    s.add_argument("--sites", type=int, default=None, help="limit number of submission targets (0 = all; each site contributes two targets)")
+    s.add_argument(
+        "--sites",
+        type=int,
+        default=None,
+        help="only use the first N sites (0 = all). A site keeps both of its "
+        "URL shapes, so it can still produce two requests",
+    )
     s.add_argument(
         "--batch",
         type=int,
@@ -330,16 +336,23 @@ def cmd_submit(args) -> int:
         )
     if modern:
         targets.extend(engine.load_modern_targets())
-    if max_sites:
-        targets = targets[:max_sites]
+    # "Max sites" caps distinct hosts, and a site keeps both of its URL
+    # shapes.  Slicing entries here used to reach only half the sites; the
+    # engine applies the same cap, this keeps the banner honest.
+    targets = engine.cap_targets(targets, max_sites)
 
     threads = opt(args.threads, cfg.threads)
     if not args.quiet:
+        # A "site" is a host; a target entry is one submission shape of it.
+        # Fast mode dedupes to one shape per host, so the request estimate
+        # differs between the two modes.
+        unique_sites = len({engine.host_of(t.url) for t in targets})
+        expected = len(urls) * (unique_sites if fast else len(targets))
         print(f"{engine.APP_NAME} v{engine.APP_VERSION}")
         print(f"  URLs    : {len(urls)}")
-        print(f"  Sites   : {len(targets)}")
+        print(f"  Sites   : {unique_sites} ({len(targets)} submission targets)")
         print(f"  Threads : {threads}")
-        print(f"  Requests: {len(urls) * len(targets)}")
+        print(f"  Requests: ~{expected}")
         print()
 
     proxy_list = list(args.proxy)

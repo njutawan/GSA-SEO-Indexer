@@ -51,6 +51,40 @@ def remember_ssl_fallback(host: str) -> None:
         _unverified_hosts[host] = now + _SSL_FALLBACK_TTL
 
 
+# --------------------------------------------------------------------------
+# Shared TLS contexts
+# --------------------------------------------------------------------------
+# ``ssl.create_default_context()`` loads and parses the CA bundle, measured at
+# ~29 ms per call.  It is easy to call it in a hot path by accident: the
+# opener used to build one for every single request (even for plain ``http://``
+# targets), which capped the whole indexer at ~34 req/s because those calls
+# serialise on the GIL.
+#
+# A context is immutable once configured, so one verified and one unverified
+# context are built per process and shared by every thread, every opener and
+# every pooled client.
+_context_lock = threading.Lock()
+_contexts: dict[bool, ssl.SSLContext] = {}
+
+
+def tls_context(verify: bool = True) -> ssl.SSLContext:
+    """Return the process-wide TLS context (verified or unverified)."""
+    ctx = _contexts.get(verify)
+    if ctx is not None:
+        return ctx
+    with _context_lock:
+        ctx = _contexts.get(verify)
+        if ctx is None:
+            ctx = ssl.create_default_context()
+            if not verify:
+                # Fallback for hosts with broken/self-signed chains; the
+                # verified context is always tried first (see _connect_https).
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            _contexts[verify] = ctx
+    return ctx
+
+
 @dataclass
 class Response:
     status: int
@@ -74,10 +108,10 @@ class _Pool:
         self.idle_ttl = idle_ttl
         self._free: dict[tuple[str, str, str, int], list[tuple[float, http.client.HTTPConnection]]] = {}
         self._lock = threading.Lock()
-        self._ctx = ssl.create_default_context()
-        self._ctx.check_hostname = False
-        self._ctx.verify_mode = ssl.CERT_NONE
-        self._verify_ctx = ssl.create_default_context()
+        # Shared process-wide: building these per pool (one pool per proxy)
+        # would pay the CA-bundle cost again for every proxy in use.
+        self._ctx = tls_context(False)
+        self._verify_ctx = tls_context(True)
 
     # -- housekeeping ----------------------------------------------------
     def _expire(self, now: float) -> None:

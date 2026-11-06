@@ -244,6 +244,19 @@ Diuji nyata terhadap `http://example.com/` dengan deteksi backlink ketat.
 > Kenapa? Mayoritas situs legacy hanya meng-echo parameter `?url=` tanpa menyimpan link, dan
 > daftar itu berumur 5+ tahun (2019–2023) — banyak yang mati atau redirect.
 
+### Overhead klien (benchmark lokal, tanpa latensi jaringan)
+
+| Metrik | Sebelum | Sesudah |
+|---|---|---|
+| 16 thread | 43,8 req/s | **314,0 req/s** |
+| 1 thread | 30,9 req/s | **982,1 req/s** |
+| Median latensi per request | 29 ms | **0–6 ms** |
+
+> Sumber: `python tools/bench_local.py 400 16`. Angka ini mengisolasi biaya sisi klien —
+> context TLS yang dulu dibuat ulang untuk setiap request (±29 ms, termasuk untuk target
+> `http://`) sekarang dibagi satu kali per proses. Rincian dan roadmap optimasi lain:
+> **[OPTIMIZATION-REVIEW.md](OPTIMIZATION-REVIEW.md)**.
+
 ---
 
 ## ⚖️ Etika & Batasan

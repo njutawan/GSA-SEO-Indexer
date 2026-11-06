@@ -743,7 +743,9 @@ class IndexerApp(tk.Tk):
         if mode in ("modern", "both"):
             targets.extend(load_modern_targets())
         if self.settings.max_sites:
-            targets = targets[: self.settings.max_sites]
+            # Distinct hosts, not list entries: one site contributes two
+            # shapes, so slicing entries halved the effective cap.
+            targets = engine.cap_targets(targets, self.settings.max_sites)
         return targets
 
     def _sync_settings(self) -> None:
@@ -1234,7 +1236,8 @@ class IndexerApp(tk.Tk):
         if not targets:
             messagebox.showwarning("No sites", "No indexing sites are available.")
             return
-        msg = f"Submitting {len(good)} URL(s) to {len(targets)} site(s) ..."
+        unique_sites = len({engine.host_of(t.url) for t in targets})
+        msg = f"Submitting {len(good)} URL(s) to {unique_sites} site(s) ..."
         if invalid:
             msg += f"  ({invalid} invalid skipped)"
         self.var_status.set(msg)

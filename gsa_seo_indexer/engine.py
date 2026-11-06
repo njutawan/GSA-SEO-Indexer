@@ -26,7 +26,12 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Callable, Iterable, Iterator, Sequence
 
-from .httpclient import PooledHttpClient, needs_ssl_fallback, remember_ssl_fallback
+from .httpclient import (
+    PooledHttpClient,
+    needs_ssl_fallback,
+    remember_ssl_fallback,
+    tls_context,
+)
 from .paths import resource_dir, runtime_dir
 from .perf import DnsCache, HostCache, activate_dns_cache, deactivate_dns_cache, host_of, port_of
 
@@ -403,6 +408,19 @@ class RunStats:
 
 
 # --------------------------------------------------------------------------
+# Shared TLS contexts
+# --------------------------------------------------------------------------
+# The contexts themselves live in :mod:`.httpclient` (`tls_context`), because
+# the pooled client needs the same two objects; a second copy here would
+# reintroduce the per-request CA-bundle cost this whole section exists to
+# remove.  See :func:`gsa_seo_indexer.httpclient.tls_context` for the
+# measurements.
+def _ssl_context(verify: bool) -> ssl.SSLContext:
+    """Return the shared TLS context (verified or unverified)."""
+    return tls_context(verify)
+
+
+# --------------------------------------------------------------------------
 # The engine
 # --------------------------------------------------------------------------
 class Indexer:
@@ -416,9 +434,7 @@ class Indexer:
         self._proxy_pool = list(self.settings.proxy_list)
         self._good_proxies = list(self.settings.proxy_list)
         self._retired: set[str] = set()
-        self._ssl_ctx = ssl.create_default_context()
-        self._ssl_ctx.check_hostname = False
-        self._ssl_ctx.verify_mode = ssl.CERT_NONE
+        self._ssl_ctx = _ssl_context(False)
         self.host_cache = HostCache(dead_ttl=self.settings.dead_ttl)
         self.skipped_dead = 0
         self.restored_dead = 0
@@ -508,9 +524,11 @@ class Indexer:
         pool in :mod:`.perf` is used instead when it is enabled.
 
         ``verify`` selects a context that checks certificates; the
-        unverified context is only a fallback (see ``_urlopen``).
+        unverified context is only a fallback (see ``_urlopen``).  Both
+        contexts are process-wide singletons: building one loads the CA
+        bundle and used to happen once per request (see ``_ssl_context``).
         """
-        ctx = ssl.create_default_context() if verify else self._ssl_ctx
+        ctx = _ssl_context(verify)
         handlers: list[urllib.request.BaseHandler] = [
             urllib.request.HTTPSHandler(context=ctx),
         ]
@@ -808,6 +826,10 @@ class Indexer:
             ]
 
     # -- bulk run ---------------------------------------------------------
+    def _cap_targets(self, targets: Sequence[PingTarget]) -> list[PingTarget]:
+        """Apply the "max sites" cap (distinct hosts) exactly once."""
+        return cap_targets(targets, self.settings.max_sites)
+
     def run(
         self,
         urls: Sequence[str],
@@ -824,6 +846,13 @@ class Indexer:
         ``reset`` is turned off by the adaptive driver, which runs two
         passes and wants the results of both.
         """
+        # ``max_sites`` caps *sites*, so it is applied to the target list
+        # before the (target x url) work items are built.  It used to slice
+        # the work list instead, which capped requests: with two URLs and
+        # --sites 800 only 400 sites were ever contacted, and the callers
+        # that already truncate the list got a second, different cap on top.
+        targets = self._cap_targets(targets)
+
         if reset:
             self._stop.clear()
             self.stats = RunStats(total=len(urls) * len(targets))
@@ -835,8 +864,6 @@ class Indexer:
             work: list[tuple[PingTarget, list[str]]] = [(t, c) for t in targets for c in chunks]
         else:
             work = [(t, [u]) for t in targets for u in urls]
-        if self.settings.max_sites:
-            work = work[: self.settings.max_sites]
 
         def worker(item: tuple[PingTarget, list[str]]) -> list[Result]:
             if self._stop.is_set():
@@ -975,10 +1002,10 @@ class Indexer:
         self._stop.clear()
         self.results = []
         self.skipped_dead = 0
-        self.stats = RunStats(total=len(urls) * len(targets))
 
-        primary = dedupe_by_host(targets)
+        primary = self._cap_targets(dedupe_by_host(targets))
         primary_all = list(primary)
+        self.stats = RunStats(total=len(urls) * len(primary))
         if self.settings.preflight:
             alive = self.preflight(primary)
             if alive:
@@ -1036,7 +1063,7 @@ class Indexer:
         self.results = []
         self.skipped_dead = 0
 
-        primary = dedupe_by_host(targets)
+        primary = self._cap_targets(dedupe_by_host(targets))
         self.stats = RunStats(total=len(urls) * len(primary))
 
         # run() owns the bookkeeping; this is only a progress notification.
@@ -1190,6 +1217,15 @@ def _classify_link(body: str, payload: str) -> str:
         return ""
     host = bare.split("/", 1)[0].lower()
 
+    # Fast reject: most pages never mention the target at all, and the
+    # anchor scan plus the query-echo regex below cost ~1.9 ms on a 200 kB
+    # body.  One lower-cased copy plus a substring test answers "not here"
+    # for a fraction of that, so the expensive passes only run on the few
+    # pages that could actually match.
+    lowered = body.lower()
+    if bare.lower() not in lowered and payload.lower() not in lowered:
+        return ""
+
     for m in re.finditer(r'<a\b[^>]*\bhref=["\']([^"\']+)["\']', body, re.I):
         href = m.group(1).strip()
         h = href.lower()
@@ -1304,6 +1340,38 @@ def dedupe_by_host(targets: Sequence[PingTarget]) -> list[PingTarget]:
         if h not in best:
             best[h] = t
     return list(best.values())
+
+
+def cap_targets(targets: Sequence[PingTarget], limit: int) -> list[PingTarget]:
+    """Limit the list to ``limit`` distinct sites, keeping every URL shape.
+
+    "Max sites" counts *sites*, and one site contributes more than one
+    submission shape (the ``?url=`` query form and the path form).  Three
+    different things used to be capped instead:
+
+    * the callers (CLI/GUI) sliced the list to N entries, which on the
+      legacy list is only N/2 sites;
+    * ``Indexer.run`` sliced the *work* list (target x URL), dividing the cap
+      by the number of URLs again - two URLs and ``--sites 800`` reached just
+      400 sites;
+    * ``stats.total`` was computed before either cap, so the progress bar
+      could never reach 100%.
+
+    Capping by distinct host keeps the meaning stable in every mode and keeps
+    the fallback shape of each selected site, which the adaptive driver needs.
+    """
+    if not limit or limit <= 0:
+        return list(targets)
+    out: list[PingTarget] = []
+    hosts: set[str] = set()
+    for target in targets:
+        host = host_of(target.url)
+        if host not in hosts:
+            if len(hosts) >= limit:
+                break
+            hosts.add(host)
+        out.append(target)
+    return out
 
 
 def fallback_targets(targets: Sequence[PingTarget]) -> list[PingTarget]:

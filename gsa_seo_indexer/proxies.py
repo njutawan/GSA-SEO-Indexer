@@ -11,12 +11,13 @@ import concurrent.futures
 import random
 import re
 import socket
-import ssl
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Iterable, Sequence
+
+from .httpclient import tls_context
 
 # Free proxy list sources, same spirit as the ones GSA ships in
 # proxyfinder.ini.
@@ -107,9 +108,9 @@ def download_proxy_lists(
     sources: Sequence[str] = PROXY_SOURCES, timeout: float = 20.0
 ) -> list[Proxy]:
     """Download and parse the free proxy lists."""
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
+    # Shared, lazily-built context: the proxy lists are plain https fetches
+    # and a per-call CA-bundle load is ~29 ms of pure CPU.
+    ctx = tls_context(False)
     proxies: list[Proxy] = []
     seen: set[str] = set()
     for src in sources:
@@ -129,9 +130,7 @@ def download_proxy_lists(
 
 # The SSL context has to be attached to the handler, not passed to
 # open(), or the proxy tunnel cannot be used.
-_SSL_CTX = ssl.create_default_context()
-_SSL_CTX.check_hostname = False
-_SSL_CTX.verify_mode = ssl.CERT_NONE
+_SSL_CTX = tls_context(False)
 
 
 def test_proxy(

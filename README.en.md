@@ -180,6 +180,19 @@ Real-world tested against `http://example.com/` with strict backlink detection.
 > Why? Most legacy sites just echo the `?url=` parameter without storing the link, and that list
 > is 5+ years old (2019–2023) — many are dead or redirected.
 
+### Client overhead (local benchmark, no network latency)
+
+| Metric | Before | After |
+|---|---|---|
+| 16 threads | 43.8 req/s | **314.0 req/s** |
+| 1 thread | 30.9 req/s | **982.1 req/s** |
+| Median latency per request | 29 ms | **0–6 ms** |
+
+> Source: `python tools/bench_local.py 400 16`. These numbers isolate the client-side cost —
+> the TLS context that used to be rebuilt for every request (~29 ms, even for `http://` targets)
+> is now built once per process. See **[OPTIMIZATION-REVIEW.md](OPTIMIZATION-REVIEW.md)** for
+> the full analysis and the remaining roadmap.
+
 ---
 
 ## ⚖️ Ethics & Limits
