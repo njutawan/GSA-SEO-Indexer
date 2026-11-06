@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-measure every optimisation claim from P0 to P8, offline.
+"""Re-measure every optimisation claim from P0 to P9, offline.
 
 The numbers in ``OPTIMIZATION-REVIEW.md`` were produced by one-off commands
 spread over three phases; this script turns them into a single re-runnable
@@ -10,7 +10,7 @@ CPU/memory claims are measured directly.
 Usage::
 
     python tools/verify_all.py            # all checks, table + exit code
-    python tools/verify_all.py --only p2  # one phase (p0..p8)
+    python tools/verify_all.py --only p2  # one phase (p0..p9)
 
 Every line prints the *measured* value next to the claim it backs, so a
 regression shows up as FAIL with the number that moved, not as a vague
@@ -932,6 +932,48 @@ def p7_post_target() -> tuple[str, bool]:
     )
 
 
+class _FlakyHandler(http.server.BaseHTTPRequestHandler):
+    """Answers 503 (with Retry-After) until ``ok_after`` requests have been made."""
+
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args) -> None:  # noqa: D102
+        pass
+
+    def do_GET(self) -> None:  # noqa: N802
+        srv = self.server
+        with srv.lock:
+            srv.hits += 1
+            hit = srv.hits
+        if hit > srv.ok_after:
+            payload, code, header = srv.page, 200, None
+        else:
+            payload, code, header = b"<html>later</html>", 503, srv.retry_after
+        self.send_response(code)
+        if header is not None:
+            self.send_header("Retry-After", header)
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+
+@contextmanager
+def flaky_serve(ok_after: int = 1, retry_after: str = "0"):
+    srv = _CaptureServer(("127.0.0.1", 0), _FlakyHandler)
+    srv.ok_after = ok_after
+    srv.retry_after = retry_after
+    srv.hits = 0
+    srv.page = b'<html><a href="http://t.example/">t.example</a></html>'
+    thread = threading.Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = srv.server_address[:2]
+        yield srv, f"http://{host}:{port}"
+    finally:
+        srv.shutdown()
+        srv.server_close()
+
+
 def p8_gzip() -> tuple[str, bool]:
     # Deliberately a *hard* page to compress (random words + random numbers):
     # a page of one repeated sentence compresses 100x and would flatter the
@@ -996,6 +1038,54 @@ def p8_gzip() -> tuple[str, bool]:
     )
 
 
+def p9_retry() -> tuple[str, bool]:
+    target_url = "http://t.example/"
+
+    with flaky_serve(ok_after=1) as (srv, base):
+        ix = _harness()
+        try:
+            plain = ix.submit_one(PingTarget(url=f"{base}/"), target_url)
+        finally:
+            ix.close()
+        plain_hits = srv.hits
+
+    with flaky_serve(ok_after=1) as (srv, base):
+        ix = _harness(retries=1)
+        try:
+            retried = ix.submit_one(PingTarget(url=f"{base}/"), target_url)
+        finally:
+            ix.close()
+        retry_hits = srv.hits
+
+    with flaky_serve(ok_after=99, retry_after="60") as (srv, base):
+        ix = _harness(retries=3, retry_max_wait=1.0)
+        started = time.perf_counter()
+        try:
+            refused = ix.submit_one(PingTarget(url=f"{base}/"), target_url)
+        finally:
+            ix.close()
+        refused_hits = srv.hits
+        refused_time = time.perf_counter() - started
+
+    ok = (
+        plain_hits == 1
+        and plain.status == "failed"
+        and retry_hits == 2
+        and retried.status == "submitted"
+        and retried.indexable
+        and refused_hits == 1
+        and refused.status == "failed"
+        and "retry habis" in refused.error
+        and refused_time < 1.0
+    )
+    return (
+        f"503 lalu 200: {plain_hits} -> {retry_hits} request, "
+        f"{plain.status} -> {retried.status}; Retry-After 60 s dengan cap 1 s "
+        f"ditolak ({refused_hits} request, {refused_time:.2f} s, {refused.status})",
+        ok,
+    )
+
+
 CHECKS = [
     ("p0", "TLS context dibagi per proses", p0_shared_tls),
     ("p0", "Throughput 16 thread", p0_throughput_16),
@@ -1025,14 +1115,15 @@ CHECKS = [
     ("p6", "Hasil dibatasi di memori", p6_result_store),
     ("p7", "Target POST mengirim body", p7_post_target),
     ("p8", "Gzip menghemat kabel", p8_gzip),
+    ("p9", "Retry 429/503 menghormati Retry-After", p9_retry),
 ]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P8.")
+    parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P9.")
     parser.add_argument(
         "--only",
-        choices=["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"],
+        choices=["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"],
         help="satu fase saja",
     )
     args = parser.parse_args(argv)

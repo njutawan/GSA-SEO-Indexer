@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import concurrent.futures
 import csv
+import datetime
+import email.utils
 import functools
 import http.client
 import json
@@ -262,6 +264,14 @@ class Settings:
     # do not expect - and because an end-to-end A/B on the real list has not
     # been run (see OPTIMIZATION-REVIEW.md, gzip).
     accept_gzip: bool = False
+    # 429/503 are the two answers that mean "later", not "no": the site is
+    # rate limiting or briefly overloaded.  Retrying them costs wall-clock
+    # time, never throughput, so it is opt-in with a hard ceiling on the
+    # wait - a Retry-After longer than retry_max_wait is not obeyed, the
+    # result is recorded as failed instead of stalling a worker for a
+    # minute.  0 keeps the old behaviour (one attempt).
+    retries: int = 0
+    retry_max_wait: float = 10.0
     # Batching is 4.5x faster but drops the backlinks (a site usually
     # stores only the first URL of a batch), so it stays opt-in.
     batch_size: int = 0
@@ -357,6 +367,8 @@ class Settings:
             s.dns_negative_ttl = get("misc", "dns negative ttl", float, s.dns_negative_ttl)
             s.preflight = get("misc", "preflight", bool, s.preflight)
             s.accept_gzip = get("misc", "accept gzip", bool, s.accept_gzip)
+            s.retries = get("misc", "retries", int, s.retries)
+            s.retry_max_wait = get("misc", "retry max wait", float, s.retry_max_wait)
             s.reuse_connections = get("misc", "connection pool", bool, s.reuse_connections)
             s.batch_size = get("misc", "batch size", int, s.batch_size)
             s.fast_mode = get("misc", "fast mode", bool, s.fast_mode)
@@ -406,6 +418,8 @@ class Settings:
             "dns negative ttl": f"{self.dns_negative_ttl:g}",
             "preflight": "1" if self.preflight else "0",
             "accept gzip": "1" if self.accept_gzip else "0",
+            "retries": str(self.retries),
+            "retry max wait": f"{self.retry_max_wait:g}",
             "connection pool": "1" if self.reuse_connections else "0",
             "batch size": str(self.batch_size),
             "fast mode": "1" if self.fast_mode else "0",
@@ -423,6 +437,66 @@ class Settings:
         with open(path, "w", encoding="utf-8") as fh:
             fh.write("# GSA SEO Indexer clone - shared by the GUI and the CLI\n")
             cfg.write(fh)
+
+
+# --------------------------------------------------------------------------
+# Retry policy (429 / 503)
+# --------------------------------------------------------------------------
+#: The two statuses that mean "come back later".
+RETRY_STATUSES = frozenset({429, 503})
+
+
+def retry_after_seconds(headers) -> float | None:
+    """Parse a ``Retry-After`` header (delta-seconds or an HTTP date).
+
+    Returns ``None`` when the header is missing or unreadable.  A date in the
+    past becomes ``0`` (retry immediately) instead of a negative sleep.
+    """
+    if not headers:
+        return None
+    try:
+        raw = headers.get("Retry-After") or headers.get("retry-after")
+    except AttributeError:
+        return None
+    if raw is None:
+        return None
+    raw = str(raw).strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        return float(raw)
+    try:
+        when = email.utils.parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    return max(0.0, when.timestamp() - time.time())
+
+
+def retry_delay(
+    attempt: int,
+    headers=None,
+    cap: float = 10.0,
+    rng: random.Random | None = None,
+) -> float | None:
+    """How long to wait before attempt ``attempt + 2``, or ``None`` to give up.
+
+    ``Retry-After`` wins when the server sends one; otherwise the wait doubles
+    from 0.5 s with up to 25% jitter, so a list that hits the same overloaded
+    host does not retry in lockstep.  A wait longer than ``cap`` is refused -
+    the caller records a failure instead of parking a worker.
+    """
+    delay = retry_after_seconds(headers)
+    if delay is None:
+        base = 0.5 * (2 ** max(0, attempt))
+        jitter = (rng or random).uniform(0.0, 0.25)
+        delay = base * (1.0 + jitter)
+    if delay > cap:
+        return None
+    return delay
 
 
 # --------------------------------------------------------------------------
@@ -530,6 +604,10 @@ class Indexer:
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self.stats = RunStats()
+        # Response headers of the last request on this thread, needed by the
+        # retry policy (Retry-After).  Thread-local because the workers share
+        # the Indexer and each one is inside its own request.
+        self._local = threading.local()
         self.results = ResultStore(
             max_memory=self.settings.max_results_in_memory,
             pack=_pack_result,
@@ -818,6 +896,57 @@ class Indexer:
         method = target.http_method
         data = target.post_body(payload) if method == "POST" else None
         req = self._request(url, method=method, data=data)
+
+        # One attempt is the old behaviour, and stays the default: retrying
+        # 429/503 costs wall-clock time, so it is opt-in (Settings.retries).
+        attempts = 1 + max(0, int(self.settings.retries))
+        for attempt in range(attempts):
+            last = attempt == attempts - 1
+            wait = self._submit_attempt(
+                payload, url, req, proxy, method, data, host, started, attempt, last
+            )
+            if isinstance(wait, Result):
+                return wait
+            # A float means "the server asked for later": sleep on the stop
+            # event so Stop still interrupts a run that is mid-backoff.
+            if self._stop.wait(wait):
+                return Result(
+                    target=payload,
+                    url=url,
+                    status="skipped",
+                    code=0,
+                    elapsed_ms=int((time.perf_counter() - started) * 1000),
+                    error="stopped during retry",
+                )
+        # Unreachable: the last attempt always returns a Result.
+        return Result(
+            target=payload,
+            url=url,
+            status="failed",
+            code=0,
+            elapsed_ms=int((time.perf_counter() - started) * 1000),
+            error="retry loop finished without a final attempt",
+        )
+
+    def _submit_attempt(
+        self,
+        payload: str,
+        url: str,
+        req: urllib.request.Request,
+        proxy: str | None,
+        method: str,
+        data: str | None,
+        host: str,
+        started: float,
+        attempt: int,
+        last: bool,
+    ) -> "Result | float":
+        """Run one attempt.
+
+        Returns the ``Result`` when the attempt is final, or the number of
+        seconds to wait when the server answered 429/503 and another attempt
+        is allowed.
+        """
         try:
             # A GET keeps the exact call it always made, so tests and callers
             # that replace _fetch are unaffected by the POST support.
@@ -826,6 +955,29 @@ class Indexer:
             else:
                 body, code = self._fetch(url, req, proxy, method=method, data=data)
             elapsed = int((time.perf_counter() - started) * 1000)
+            if code in RETRY_STATUSES and self.settings.retries > 0:
+                # Only the pooled client returns an error status as a value
+                # (urllib raises), and only with retries enabled is it a
+                # retryable answer rather than a recorded success.
+                delay = (
+                    None
+                    if last
+                    else retry_delay(
+                        attempt, self._response_headers(), self.settings.retry_max_wait
+                    )
+                )
+                if delay is not None:
+                    return delay
+                if host:
+                    self.host_cache.record_failure(host, f"HTTP {code}")
+                return Result(
+                    target=payload,
+                    url=url,
+                    status="failed",
+                    code=code,
+                    elapsed_ms=elapsed,
+                    error=f"HTTP {code} (retry habis)",
+                )
             if host:
                 self.host_cache.record_success(host, elapsed)
             kind = _classify_link(body, payload)
@@ -840,6 +992,10 @@ class Indexer:
             )
         except urllib.error.HTTPError as exc:
             elapsed = int((time.perf_counter() - started) * 1000)
+            if exc.code in RETRY_STATUSES and self.settings.retries > 0 and not last:
+                delay = retry_delay(attempt, exc.headers, self.settings.retry_max_wait)
+                if delay is not None:
+                    return delay
             # An HTTP error means the host answered: it is alive, just not
             # willing to store the link.
             if host and exc.code < 500:
@@ -848,13 +1004,16 @@ class Indexer:
                 self.host_cache.record_failure(host, f"HTTP {exc.code}")
             if exc.code in (407, 429, 500, 502, 503):
                 self._retire_proxy(proxy)
+            exhausted = (
+                exc.code in RETRY_STATUSES and self.settings.retries > 0
+            )
             return Result(
                 target=payload,
                 url=url,
                 status="failed",
                 code=exc.code,
                 elapsed_ms=elapsed,
-                error=f"HTTP {exc.code}",
+                error=f"HTTP {exc.code}" + (" (retry habis)" if exhausted else ""),
             )
         except Exception as exc:  # noqa: BLE001
             elapsed = int((time.perf_counter() - started) * 1000)
@@ -912,10 +1071,20 @@ class Indexer:
                     follow_redirects=self.settings.follow_redirects,
                 )
             if resp.status != 0:
+                self._remember_headers(resp)
                 return resp.body[: self.settings.max_body_bytes], resp.status
             # the pooled client failed - fall back to urllib once
         with self._urlopen(req, proxy, self._timeout()) as resp:
+            self._remember_headers(resp)
             return self._read_body(resp), resp.status
+
+    def _remember_headers(self, resp) -> None:
+        """Keep the response headers for the retry policy of this attempt."""
+        headers = getattr(resp, "headers", None)
+        self._local.headers = headers
+
+    def _response_headers(self):
+        return getattr(self._local, "headers", None)
 
     def _read_body(self, resp) -> str:
         """Read at most ``max_body_bytes`` and undo any Content-Encoding."""

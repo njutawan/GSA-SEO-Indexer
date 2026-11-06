@@ -189,6 +189,20 @@ def build_parser() -> argparse.ArgumentParser:
         "because some ping sites answer 406 to it)",
     )
     s.add_argument(
+        "--retries",
+        type=int,
+        default=None,
+        help="retry 429/503 up to N extra times, obeying Retry-After "
+        "(default: config.ini or 0 = one attempt)",
+    )
+    s.add_argument(
+        "--retry-max-wait",
+        type=float,
+        default=None,
+        help="longest wait a retry may spend (default: config.ini or 10s); a "
+        "longer Retry-After is refused and the result is recorded as failed",
+    )
+    s.add_argument(
         "--connect-timeout",
         type=float,
         default=None,
@@ -460,6 +474,8 @@ def cmd_submit(args) -> int:
         skip_dead_hosts=not opt(args.no_skip_dead, not cfg.skip_dead_hosts),
         preflight=bool(opt(args.preflight, cfg.preflight)),
         accept_gzip=bool(opt(args.gzip, cfg.accept_gzip)),
+        retries=int(opt(args.retries, cfg.retries) or 0),
+        retry_max_wait=float(opt(args.retry_max_wait, cfg.retry_max_wait)),
         reuse_connections=bool(opt(args.pool, cfg.reuse_connections)),
         batch_size=batch_size,
         fast_mode=fast,
