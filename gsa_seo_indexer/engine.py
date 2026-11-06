@@ -272,6 +272,11 @@ class Settings:
     # minute.  0 keeps the old behaviour (one attempt).
     retries: int = 0
     retry_max_wait: float = 10.0
+    # "threads" (default) or "asyncio".  The event loop keeps thousands of
+    # requests in flight for a few MB where each thread costs a stack; it is
+    # opt-in because it is newer code and because proxying is implemented for
+    # the thread transport only.
+    transport: str = "threads"
     # Batching is 4.5x faster but drops the backlinks (a site usually
     # stores only the first URL of a batch), so it stays opt-in.
     batch_size: int = 0
@@ -369,6 +374,9 @@ class Settings:
             s.accept_gzip = get("misc", "accept gzip", bool, s.accept_gzip)
             s.retries = get("misc", "retries", int, s.retries)
             s.retry_max_wait = get("misc", "retry max wait", float, s.retry_max_wait)
+            tr = get("misc", "transport", str, s.transport).strip().lower()
+            if tr in ("threads", "asyncio"):
+                s.transport = tr
             s.reuse_connections = get("misc", "connection pool", bool, s.reuse_connections)
             s.batch_size = get("misc", "batch size", int, s.batch_size)
             s.fast_mode = get("misc", "fast mode", bool, s.fast_mode)
@@ -420,6 +428,7 @@ class Settings:
             "accept gzip": "1" if self.accept_gzip else "0",
             "retries": str(self.retries),
             "retry max wait": f"{self.retry_max_wait:g}",
+            "transport": self.transport,
             "connection pool": "1" if self.reuse_connections else "0",
             "batch size": str(self.batch_size),
             "fast mode": "1" if self.fast_mode else "0",
@@ -608,6 +617,8 @@ class Indexer:
         # retry policy (Retry-After).  Thread-local because the workers share
         # the Indexer and each one is inside its own request.
         self._local = threading.local()
+        # Set when an asyncio run had to fall back to threads (proxy/batch).
+        self.transport_fallback = ""
         self.results = ResultStore(
             max_memory=self.settings.max_results_in_memory,
             pack=_pack_result,
@@ -1230,6 +1241,29 @@ class Indexer:
         """Apply the "max sites" cap (distinct hosts) exactly once."""
         return cap_targets(targets, self.settings.max_sites)
 
+    def _record(self, res: Result, on_result: Callable[[Result], None] | None = None) -> None:
+        """Count and store one finished result (the single owner of stats).
+
+        Both transports call this, so a run reports identical numbers no matter
+        which one produced the rows.
+        """
+        with self._lock:
+            self.results.append(res)
+            if res.status == "submitted":
+                self.stats.submitted += 1
+            elif res.status == "skipped":
+                self.stats.skipped += 1
+            else:
+                self.stats.failed += 1
+            if res.indexable:
+                self.stats.indexable += 1
+            elif res.listed:
+                self.stats.listed += 1
+            self.stats.last_result = res
+        if on_result:
+            # notification only - the bookkeeping above is the single owner
+            on_result(res)
+
     def run(
         self,
         urls: Sequence[str],
@@ -1293,64 +1327,66 @@ class Indexer:
                     return
                 pending[pool.submit(worker, item)] = item
 
-        with concurrent.futures.ThreadPoolExecutor(
-            max_workers=max(1, self.settings.threads)
-        ) as pool:
-            submit_more(pool)
-            try:
-                while pending:
-                    if self._stop.is_set():
-                        break
-                    done, _not_done = concurrent.futures.wait(
-                        pending,
-                        timeout=0.5,
-                        return_when=concurrent.futures.FIRST_COMPLETED,
-                    )
-                    if not done:
-                        # Nothing finished yet: loop back to re-check the stop
-                        # flag, so Stop reacts within half a second even when
-                        # every in-flight host is sitting on its timeout.
-                        continue
-                    for future in done:
-                        item = pending.pop(future)
-                        try:
-                            results = future.result()
-                        except Exception as exc:  # noqa: BLE001 - never kill the run
-                            # submit_batch already catches transport errors;
-                            # this is the last line of defence for a bug.
-                            results = [
-                                Result(
-                                    target=payload,
-                                    url=item[0].url,
-                                    status="failed",
-                                    error=str(exc)[:160],
-                                )
-                                for payload in item[1]
-                            ]
-                        for res in results:
-                            with self._lock:
-                                self.results.append(res)
-                                if res.status == "submitted":
-                                    self.stats.submitted += 1
-                                elif res.status == "skipped":
-                                    self.stats.skipped += 1
-                                else:
-                                    self.stats.failed += 1
-                                if res.indexable:
-                                    self.stats.indexable += 1
-                                elif res.listed:
-                                    self.stats.listed += 1
-                                self.stats.last_result = res
-                            if on_result:
-                                # notification only - the bookkeeping above is
-                                # the single owner of results and stats
-                                on_result(res)
-                    submit_more(pool)
-            finally:
-                # Pending work must not start once the run is over; requests
-                # already in flight finish within the request timeout.
-                for queued in pending:
-                    queued.cancel()
+        use_loop = (
+            self.settings.transport == "asyncio"
+            and not self.settings.use_proxy
+            and batch_size in (0, 1)
+        )
+        if use_loop:
+            # One event loop instead of a thread per in-flight request.  The
+            # rows, stats and host cache come out of the same helpers, so a
+            # run reports the same numbers either way.
+            from .asyncio_transport import run_work
+
+            run_work(self, work, on_result)
+        else:
+            if self.settings.transport == "asyncio":
+                # Proxy support and the batched path only exist for
+                # threads; falling back silently would hide that, so the
+                # reason is recorded for the caller to report.
+                self.transport_fallback = "proxy/batch -> threads"
+            with concurrent.futures.ThreadPoolExecutor(
+                max_workers=max(1, self.settings.threads)
+            ) as pool:
+                submit_more(pool)
+                try:
+                    while pending:
+                        if self._stop.is_set():
+                            break
+                        done, _not_done = concurrent.futures.wait(
+                            pending,
+                            timeout=0.5,
+                            return_when=concurrent.futures.FIRST_COMPLETED,
+                        )
+                        if not done:
+                            # Nothing finished yet: loop back to re-check the stop
+                            # flag, so Stop reacts within half a second even when
+                            # every in-flight host is sitting on its timeout.
+                            continue
+                        for future in done:
+                            item = pending.pop(future)
+                            try:
+                                results = future.result()
+                            except Exception as exc:  # noqa: BLE001 - never kill the run
+                                # submit_batch already catches transport errors;
+                                # this is the last line of defence for a bug.
+                                results = [
+                                    Result(
+                                        target=payload,
+                                        url=item[0].url,
+                                        status="failed",
+                                        error=str(exc)[:160],
+                                    )
+                                    for payload in item[1]
+                                ]
+                            for res in results:
+                                self._record(res, on_result)
+                        submit_more(pool)
+                finally:
+                    # Pending work must not start once the run is over; requests
+                    # already in flight finish within the request timeout.
+                    for queued in pending:
+                        queued.cancel()
 
         # A run that learned which hosts are dead carries that knowledge
         # into the next process - even a stopped run has usually already

@@ -189,6 +189,13 @@ def build_parser() -> argparse.ArgumentParser:
         "because some ping sites answer 406 to it)",
     )
     s.add_argument(
+        "--transport",
+        choices=["threads", "asyncio"],
+        default=None,
+        help="submission transport: a thread pool (default) or one asyncio "
+        "event loop (no proxy support, no batching)",
+    )
+    s.add_argument(
         "--retries",
         type=int,
         default=None,
@@ -474,6 +481,7 @@ def cmd_submit(args) -> int:
         skip_dead_hosts=not opt(args.no_skip_dead, not cfg.skip_dead_hosts),
         preflight=bool(opt(args.preflight, cfg.preflight)),
         accept_gzip=bool(opt(args.gzip, cfg.accept_gzip)),
+        transport=str(opt(args.transport, cfg.transport) or "threads"),
         retries=int(opt(args.retries, cfg.retries) or 0),
         retry_max_wait=float(opt(args.retry_max_wait, cfg.retry_max_wait)),
         reuse_connections=bool(opt(args.pool, cfg.reuse_connections)),

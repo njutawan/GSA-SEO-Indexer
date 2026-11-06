@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-measure every optimisation claim from P0 to P9, offline.
+"""Re-measure every optimisation claim from P0 to P10, offline.
 
 The numbers in ``OPTIMIZATION-REVIEW.md`` were produced by one-off commands
 spread over three phases; this script turns them into a single re-runnable
@@ -10,7 +10,7 @@ CPU/memory claims are measured directly.
 Usage::
 
     python tools/verify_all.py            # all checks, table + exit code
-    python tools/verify_all.py --only p2  # one phase (p0..p9)
+    python tools/verify_all.py --only p2  # one phase (p0..p10)
 
 Every line prints the *measured* value next to the claim it backs, so a
 regression shows up as FAIL with the number that moved, not as a vague
@@ -71,6 +71,10 @@ HEADER_KEYS = ("user-agent", "accept", "accept-language", "referer")
 class _CaptureServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    # socketserver defaults to a listen backlog of 5, which turns a burst of
+    # 50 concurrent connects into "connection refused" - that is a property of
+    # the fixture, not of the transport being measured.
+    request_queue_size = 512
 
     def handle_error(self, request, client_address) -> None:
         # A client that times out on purpose closes the socket mid-reply; that
@@ -1086,6 +1090,47 @@ def p9_retry() -> tuple[str, bool]:
     )
 
 
+def p10_asyncio() -> tuple[str, bool]:
+    page = '<html><a href="http://t.example/">t.example</a></html>'
+    target_url = "http://t.example/"
+    count, concurrency = 600, 50
+
+    def measure(transport: str):
+        ix = _harness(
+            threads=concurrency,
+            transport=transport,
+            timeout=20.0,
+            connect_timeout=10.0,
+            read_timeout=10.0,
+        )
+        try:
+            targets = [PingTarget(url=f"{base}/", mode="query") for _ in range(count)]
+            started = time.perf_counter()
+            results = ix.run([target_url], targets)
+            elapsed = time.perf_counter() - started
+            rows = sorted(
+                (r.target, r.url, r.status, r.code, r.indexable, r.listed) for r in results
+            )
+            return count / elapsed, rows, ix.stats.submitted, ix.stats.failed
+        finally:
+            ix.close()
+
+    with serve(body=page) as (_srv, base):
+        thread_rate, thread_rows, thread_ok, thread_fail = measure("threads")
+        loop_rate, loop_rows, loop_ok, loop_fail = measure("asyncio")
+
+    same_rows = thread_rows == loop_rows
+    same_stats = (thread_ok, thread_fail) == (loop_ok, loop_fail)
+    ratio = loop_rate / thread_rate if thread_rate else 0
+    ok = same_rows and same_stats and ratio >= 0.8 and loop_ok == count
+    return (
+        f"{count} request @ concurrency {concurrency}: threads {thread_rate:.0f} req/s, "
+        f"asyncio {loop_rate:.0f} req/s ({ratio:.2f}x); baris identik={same_rows}, "
+        f"statistik sama={same_stats} ({loop_ok} submitted)",
+        ok,
+    )
+
+
 CHECKS = [
     ("p0", "TLS context dibagi per proses", p0_shared_tls),
     ("p0", "Throughput 16 thread", p0_throughput_16),
@@ -1116,14 +1161,15 @@ CHECKS = [
     ("p7", "Target POST mengirim body", p7_post_target),
     ("p8", "Gzip menghemat kabel", p8_gzip),
     ("p9", "Retry 429/503 menghormati Retry-After", p9_retry),
+    ("p10", "Transport asyncio setara", p10_asyncio),
 ]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P9.")
+    parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P10.")
     parser.add_argument(
         "--only",
-        choices=["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"],
+        choices=["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10"],
         help="satu fase saja",
     )
     args = parser.parse_args(argv)
