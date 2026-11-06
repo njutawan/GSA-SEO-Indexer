@@ -310,6 +310,13 @@ class PooledHttpClient:
                     with self._lock:
                         self.connections_reused += 1
                 conn.timeout = self.timeout
+                # A connection created by ``_connect`` carries the connect
+                # timeout on its socket, and a reused one may carry the
+                # previous request's value; setting ``conn.timeout`` alone does
+                # not change it.  Without this the read phase was capped by the
+                # connect timeout (found while re-verifying P2).
+                if conn.sock is not None:
+                    conn.sock.settimeout(self.timeout)
                 if self.proxy and scheme != "https":
                     # plain HTTP through a proxy: the request line carries
                     # the absolute URL

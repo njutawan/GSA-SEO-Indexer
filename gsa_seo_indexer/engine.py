@@ -1270,6 +1270,15 @@ class _ConnectTimeoutHTTPConnection(http.client.HTTPConnection):
             super().connect()
         finally:
             self.timeout = read_timeout
+            # ``super().connect()`` created the socket while ``self.timeout``
+            # was the connect timeout, and assigning ``self.timeout`` back does
+            # not touch the socket.  Without this line the connect timeout
+            # silently capped the *read* phase too: with the shipped
+            # ``connect timeout = 4`` / ``read timeout = 5`` every page slower
+            # than 4 s was recorded as a timeout.  Re-verification (P4) caught
+            # it; ``tests/test_engine.py`` now pins both halves.
+            if self.sock is not None:
+                self.sock.settimeout(read_timeout)
 
 
 class _ConnectTimeoutHTTPSConnection(http.client.HTTPSConnection):
@@ -1289,6 +1298,10 @@ class _ConnectTimeoutHTTPSConnection(http.client.HTTPSConnection):
             super().connect()
         finally:
             self.timeout = read_timeout
+            # Same as the HTTP variant: the TLS handshake and the read that
+            # follows must not inherit the connect timeout.
+            if self.sock is not None:
+                self.sock.settimeout(read_timeout)
 
 
 class _ConnectTimeoutHTTPHandler(urllib.request.HTTPHandler):

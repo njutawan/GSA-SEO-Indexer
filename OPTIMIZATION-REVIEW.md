@@ -273,6 +273,15 @@ ia mengisi fase baca **dan** menjadi batas atas fase connect.
 Pada daftar legacy yang sebagian besar mati, 20% penghematan waktu tunggu per
 host mati itu langsung terasa; yang lebih penting, opsinya kini tidak menipu.
 
+> **Koreksi (verifikasi ulang 2026-11-06).** Fase *connect* memang memakai
+> `connect_timeout`, tetapi fase *baca* masih memakai angka itu juga:
+> `super().connect()` membuat socket saat `self.timeout` berisi connect timeout,
+> dan mengembalikan `self.timeout` tidak mengubah timeout socket. Dengan nilai
+> bawaan (`connect 4` / `read 5`) setiap halaman yang butuh 4–5 detik dicatat
+> sebagai timeout. Sudah diperbaiki (socket di-set ulang setelah connect, di
+> jalur urllib **dan** pooled client) dan dikunci `ReadTimeoutTest`. Rinciannya
+> di §11.2.
+
 ### Verifikasi P2
 
 ```bash
@@ -357,17 +366,38 @@ python -m gsa_seo_indexer.cli --version
 
 ---
 
-## 8. Ide berikutnya (opsional, belum dikerjakan)
+## 8. Sisa peluang optimasi (audit 2026-11-06)
 
-- **Gzip + baca body bertahap.** Body dibaca sampai 200 kB hanya untuk mencari satu
-  substring; `Accept-Encoding: gzip` + berhenti membaca begitu target ditemukan bisa
-  memotong byte di jaringan. Hanya menolong halaman "hit", jadi ukur dulu.
-- **Backoff/`Retry-After` untuk 429/503.** Sekarang respons itu langsung menandai
-  proxy gagal; belum ada penjadwalan ulang per host.
-- **Transport asyncio** untuk run 10.000+ target: satu thread event loop bisa
-  menggantikan 50 thread, dengan memori jauh lebih kecil. Ini penulisan ulang jalur
-  inti, bukan optimasi kecil.
-- **Publikasi PyPI** + workflow rilis dari tag.
+Diukur ulang di mesin yang sama dengan benchmark P0 (server lokal, tanpa
+latensi jaringan). Angka "dampak" adalah penghematan CPU/waktu lokal, bukan
+janji kecepatan internet.
+
+| # | Temuan | Terukur sekarang | Potensi | Risiko |
+|---|---|---|---|---|
+| 1 | `_opener()` dibangun **per request** (`build_opener` + 3 handler) | **163 µs/request** — 13% dari 1,2 ms/request di loopback | cache opener per `(proxy, verify, follow_redirects)`: **+33% @1 thread** (1027→1367 req/s), +2,8% @16 thread | rendah (handler urllib tidak menyimpan state) |
+| 2 | `_classify_link()` jalur "listed" menjalankan `_QUERY_ECHO_RE` atas **seluruh body** | **1,44 ms** per halaman 200 kB (anchor-hit 0,23 ms) | periksa jendela ±200 karakter di sekitar kemunculan pertama: **0,028 ms** (−98%) | sedang (echo bisa terpotong di batas jendela → perlu uji klasifikasi) |
+| 3 | Laporan JSON memakai `indent=1` dan `json.dump` per baris | **100k baris: 1,90 s, 17,7 MB** (CSV: 0,10 s, 5,8 MB) | `separators=(",", ":")`: **−20% ukuran, −28% waktu** (0,91→0,73 MB per 5k baris) | rendah (format berubah; pembaca JSON tetap kompatibel) |
+| 4 | "Run enabled" ke index service berjalan **sekuensial** di satu thread | 48 service × 200 ms = **9,4 s** | 8 worker paralel: **1,2 s** (7,8×) | rendah–sedang (butuh pembatas + status per service di GUI) |
+| 5 | `self.results` menahan semua baris sampai run selesai | **17,7 MB / 100k baris** (slots) | run 660k baris ≈ 115 MB; streaming ke disk menghapusnya | sedang (mengubah API `results`/`write_report`) |
+| 6 | Tidak ada `Accept-Encoding: gzip` di jalur urllib | body sampai 200 kB dikirim utuh | ±3–5× lebih sedikit byte pada halaman yang compressible | sedang (perlu A/B pada list asli; sebagian situs rewel soal header) |
+| 7 | 429/503 hanya dicatat `failed`, `Retry-After` diabaikan | satu baris hilang per kejadian | retry/backoff dalam run menaikkan yield, bukan kecepatan | rendah (perlu plafon percobaan) |
+| 8 | `PingTarget(mode="post")` tidak pernah mengirim body | `submit_one` selalu GET | fitur belum lengkap, bukan bottleneck | — (tidak ada target yang memakainya) |
+| 9 | `Gui._poll()` menguras queue tanpa batas per tick | — (tkinter tidak ada di sandbox) | batasi ±500 baris/tick agar jendela tetap responsif saat burst | rendah |
+| 10 | `UrlWatcher._seen` tumbuh tanpa batas pada watch panjang | — | LRU/batas ukuran | rendah |
+
+Diukur dan **tidak** layak dikerjakan (supaya tidak diulang):
+
+- `with self._lock` per hasil di `run()`: overhead **0,08 s / 500k baris** (0,16 µs
+  per baris) — batching lock tidak sepadan dengan risikonya.
+- `check_url` men-`decode`+`lower()` 120 kB hanya untuk mencari `noindex`:
+  **0,08 ms**, sama dengan pencarian di bytes — bukan target.
+- `_headers()` (0,4 µs), `host_of()` (2,5 µs), `Result()` (0,6 µs) — sudah murah.
+- `TCP_NODELAY` sudah di-set oleh `http.client` (dan warisan `super().connect()`
+  kita mempertahankannya), jadi tidak ada penundaan Nagle yang tertinggal.
+
+Ide besar yang tetap di luar cakupan: **transport asyncio** untuk run 10.000+
+target (satu event loop menggantikan 50 thread) dan **publikasi PyPI** dengan
+workflow rilis dari tag.
 
 ---
 
@@ -397,7 +427,9 @@ python -m gsa_seo_indexer.cli --version
 | `gsa_seo_indexer/services.py` | `submit()` memakai `tls_context(True)` — API key tidak pernah lewat koneksi tanpa verifikasi (P3 #3) |
 | `gsa_seo_indexer/emulator.py` | `do_GET` mendefinisikan `path` (F821 yang ditemukan ruff) |
 | `.github/workflows/ci.yml`, `pyproject.toml` | CI matrix 3.10–3.13, `ruff check`, dev extra (P3 #5) |
-| `tests/test_engine.py` | 47 test: P0/P1/P2 + bentuk request, cap preflight, default delay |
+| `gsa_seo_indexer/engine.py`, `httpclient.py` | **fix P4**: timeout socket di-set ulang ke `read_timeout` setelah connect (urllib dan pooled) — read timeout sebelumnya tertimpa connect timeout |
+| `tools/verify_all.py` | skrip verifikasi ulang 20 pemeriksaan P0–P3, offline, `--only p0..p3` |
+| `tests/test_engine.py` | 51 test: P0/P1/P2/P3 + `ReadTimeoutTest` (4 test) |
 | `tests/test_gui_rows.py` | 3 test: cap baris tabel GUI (dengan stub tkinter) |
 | `tests/test_perf_cache.py` | 12 test: streak host, prune/batas DNS, aktivasi cache |
 | `tests/test_services.py` | 2 test: TLS verifikasi untuk index service + API key |
@@ -418,6 +450,9 @@ python tools/bench_local.py 400 16
 # benar-benar memisahkan overhead klien: 1 thread
 python tools/bench_local.py 400 1
 
+# verifikasi ulang semua klaim P0-P3 sekaligus (offline, ±16 s)
+python tools/verify_all.py
+
 # test regresi (tanpa dependency tambahan)
 python -m unittest discover -s tests -v
 
@@ -426,8 +461,81 @@ python -m unittest tests.test_engine -v       # engine + transport
 python -m unittest tests.test_perf_cache -v   # host cache + DNS cache
 python -m unittest tests.test_gui_rows -v     # cap tabel GUI (stub tkinter)
 python -m unittest tests.test_cli_timeouts -v # pemetaan opsi timeout
+python -m unittest tests.test_engine.ReadTimeoutTest -v  # connect vs read timeout
 ```
 
 Untuk mengukur dampak di jaringan nyata, jalankan run yang sama dua kali dengan build
 sebelum/sesudah dan bandingkan `Submitted`, `Backlinks`, dan waktu total — jangan
 mengandalkan angka benchmark lokal sebagai klaim kecepatan internet.
+
+---
+
+## 11. Verifikasi ulang P0–P3 (2026-11-06)
+
+Semua klaim P0–P3 diukur ulang dari nol oleh satu skrip, bukan dari catatan
+tahap sebelumnya:
+
+```bash
+python tools/verify_all.py            # 20 pemeriksaan, ±16 s, offline
+python tools/verify_all.py --only p2  # satu fase
+```
+
+```
+[PASS] P0 TLS context dibagi per proses      identitas sama=True, 0 context baru / 30 opener
+[PASS] P0 Throughput 16 thread               400 req / 16 thread = 317.5 req/s
+[PASS] P0 Throughput 1 thread                400 req / 1 thread = 951.5 req/s
+[PASS] P0 Classifier menolak cepat           200 kB tanpa target = 0.239 ms/panggilan
+[PASS] P0 Batas situs dihitung sekali        800 situs -> 800 host / 1600 target; run 3x2 = 6
+[PASS] P1 check_urls paralel                 10 URL x 300 ms = 0.61 s
+[PASS] P1 Laporan JSON streaming             5000 baris: puncak 0.36 MB (cara lama 8.7 MB)
+[PASS] P1 Result ber-slots                   100k baris: 17.7 MB vs 22.5 MB (-21%)
+[PASS] P1 Batas baris GUI                    MAX_TREE_ROWS = 5000
+[PASS] P2 Host mati setelah sukses           2 percobaan dari 5000 URL, 4998 di-skip
+[PASS] P2 Plafon cache DNS                   5000 host, batas 1000: 1000 entri, 4000 eviction
+[PASS] P2 Connect timeout dipakai            connect 0.5 -> 0.50 s, 2.0 -> 2.00 s
+[PASS] P2 Read timeout tidak tertimpa        halaman 0,5 s: connect 0,1 s -> submitted; read 0,2 s -> failed 0,20 s
+[PASS] P2 Host cache bertahan antar proses   1 host mati ditulis/dibaca (v2)
+[PASS] P3 Satu bentuk header                 submit_one/batch/check_url/pooled: 4/4 key
+[PASS] P3 Cap worker preflight               4 -> 8, 50 -> 64, 100 -> 64
+[PASS] P3 Default random_delay               random_delay=False
+[PASS] P3 TLS index service                  verify_mode=CERT_REQUIRED, check_hostname=True
+[PASS] P3 Halaman root emulator              GET / -> 200, GET /no/such/service -> 200
+[PASS] P3 ruff + test + CI                   ruff bersih; 75 test OK; CI matrix 3.10-3.13
+
+20/20 PASS dalam 16.2 s
+```
+
+### 11.1 Yang berubah dari angka tahap sebelumnya
+
+| Klaim | Angka saat fase | Angka sekarang | Catatan |
+|---|---|---|---|
+| Throughput 16 thread | 315,4 req/s | 317,5 req/s | sama (variasi mesin) |
+| Throughput 1 thread | 839,8 req/s | 951,5 req/s | sama |
+| Classifier (200 kB, miss) | 0,41 ms | 0,24 ms | sama, lebih cepat |
+| `check_urls` 10 × 300 ms | 0,60 s | 0,61 s | sama |
+| JSON peak 5.000 baris | 0,3 MB | 0,36 MB | sama (cara lama 8,7 MB) |
+| `Result` 100k | 15,2→10,4 MB | 17,7 MB vs 22,5 MB (−21%) | baseline tanpa-slots di pengukuran ini berbeda; rasionya yang penting |
+| Connect timeout | 4,00 s | 4,00 s / 0,50 s | sama |
+| Jumlah test | 71 | **75** | +4 test `ReadTimeoutTest` |
+
+### 11.2 Bug yang ditemukan justru saat verifikasi ulang
+
+**`read timeout` tidak pernah berlaku.** Tes P2 (`ConnectTimeoutTest`) hanya
+memeriksa `conn.timeout`, bukan timeout pada socket. Kenyataannya:
+
+```
+setelah connect: self.timeout=8.0, sock.timeout=0.5   # 0.5 = connect timeout
+```
+
+| Skenario (server menjawab 0,5–1,5 s) | Sebelum perbaikan | Sesudah |
+|---|---|---|
+| urllib, connect 0,2 s / read 8 s | **failed 0,23 s** (`timed out`) | **submitted 1,53 s** |
+| pooled client, connect 0,2 s / read 8 s | **failed 0,60 s** | **submitted 1,50 s** |
+| urllib, connect 5 s / read 0,4 s | submitted 3,00 s (read diabaikan) | **failed 0,40 s** |
+
+Dampak nyata: dengan `config.ini` bawaan (`connect timeout = 4`,
+`read timeout = 5`) setiap situs yang menjawab 4–5 detik dicatat gagal —
+padahal profil P2 sendiri mencatat 42% request sukses butuh lebih dari 3 detik.
+Perbaikannya tiga baris (set timeout socket setelah connect di kedua subclass
+dan di `PooledHttpClient._get_once`), dikunci `ReadTimeoutTest` (4 test) dan
+pemeriksaan `P2 Read timeout tidak tertimpa` di `tools/verify_all.py`.

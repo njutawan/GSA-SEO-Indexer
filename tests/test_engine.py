@@ -51,6 +51,54 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
+class _SlowHandler(BaseHTTPRequestHandler):
+    """Answers after a configurable delay: alive, just not fast."""
+
+    protocol_version = "HTTP/1.1"
+
+    def do_GET(self):  # noqa: N802 - http.server API
+        time.sleep(self.server.delay)
+        body = b'<html><a href="http://smoke.local/">smoke.local</a></html>'
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *_args):
+        pass
+
+
+class _QuietServer(ThreadingHTTPServer):
+    """Silences the broken pipe a client causes by timing out on purpose."""
+
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):  # noqa: D102
+        import sys as _sys
+
+        exc = _sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return
+        super().handle_error(request, client_address)
+
+
+@contextlib.contextmanager
+def slow_server(delay: float = 0.4):
+    """Yield the port of a local server that answers ``delay`` seconds late."""
+    server = _QuietServer(("127.0.0.1", 0), _SlowHandler)
+    server.request_queue_size = 64
+    server.delay = delay
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield port
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 @contextlib.contextmanager
 def local_server():
     """Yield the port of a zero-latency local HTTP server."""
@@ -708,3 +756,77 @@ class SettingsDefaultsTest(unittest.TestCase):
         # config.ini ships "random delay = 0" and the measurements found no
         # benefit; the dataclass default used to disagree with both.
         self.assertFalse(Settings().random_delay)
+
+
+# --------------------------------------------------------------------------
+# P4 — the read phase must not inherit the connect timeout
+# --------------------------------------------------------------------------
+class ReadTimeoutTest(unittest.TestCase):
+    """``connect timeout`` and ``read timeout`` are two different numbers.
+
+    P2 introduced the connect-timeout connection classes, and their unit test
+    only checked ``conn.timeout``.  Re-verification found that the *socket*
+    was still created with the connect timeout, so with the shipped
+    ``connect timeout = 4`` / ``read timeout = 5`` every page slower than 4 s
+    was recorded as a timeout - the read timeout never applied.
+    """
+
+    def _indexer(self, **kwargs) -> Indexer:
+        base = dict(
+            threads=1,
+            persist_host_cache=False,
+            dns_cache=False,
+            random_delay=False,
+            skip_dead_hosts=False,
+            follow_redirects=False,
+        )
+        base.update(kwargs)
+        return Indexer(Settings(**base))
+
+    def test_socket_timeout_after_connect_is_the_read_timeout(self) -> None:
+        with local_server() as port:
+            conn = engine._ConnectTimeoutHTTPConnection(
+                "127.0.0.1", port, timeout=5.0, connect_timeout=0.5
+            )
+            try:
+                conn.connect()
+                self.assertEqual(conn.timeout, 5.0)
+                self.assertIsNotNone(conn.sock)
+                self.assertEqual(
+                    conn.sock.gettimeout(),
+                    5.0,
+                    "fase baca masih memakai connect timeout",
+                )
+            finally:
+                conn.close()
+
+    def test_slow_page_is_not_cut_by_the_connect_timeout(self) -> None:
+        with slow_server(0.4) as port:
+            indexer = self._indexer(connect_timeout=0.15, read_timeout=5.0, timeout=5.0)
+            target = PingTarget(url=f"http://127.0.0.1:{port}/?url=", mode="query")
+            result = indexer.submit_one(target, "http://smoke.local/")
+            indexer.close()
+        self.assertEqual(result.status, "submitted", result.error)
+
+    def test_read_timeout_still_bounds_the_read(self) -> None:
+        with slow_server(1.0) as port:
+            indexer = self._indexer(connect_timeout=5.0, read_timeout=0.25, timeout=0.25)
+            target = PingTarget(url=f"http://127.0.0.1:{port}/?url=", mode="query")
+            started = time.perf_counter()
+            result = indexer.submit_one(target, "http://smoke.local/")
+            elapsed = time.perf_counter() - started
+            indexer.close()
+        self.assertEqual(result.status, "failed")
+        self.assertIn("timed out", result.error)
+        self.assertLess(elapsed, 0.9, "read timeout 0.25 s harus memotong lebih awal")
+
+    def test_pooled_client_uses_the_read_timeout(self) -> None:
+        with slow_server(0.4) as port:
+            indexer = self._indexer(
+                connect_timeout=0.15, read_timeout=5.0, timeout=5.0,
+                reuse_connections=True,
+            )
+            target = PingTarget(url=f"http://127.0.0.1:{port}/?url=", mode="query")
+            result = indexer.submit_one(target, "http://smoke.local/")
+            indexer.close()
+        self.assertEqual(result.status, "submitted", result.error)
