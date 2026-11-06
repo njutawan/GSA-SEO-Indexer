@@ -34,6 +34,12 @@ CONFIG_PATH = HERE / "config.ini"
 SERVICE_DIR = resource_dir() / "index_service"
 QUEUE_PATH = HERE / "last_queue.txt"
 
+# How many result rows the live table keeps.  A 50-URL run against the
+# legacy list produces 333,800 results; one Tk row each froze the UI and
+# cost hundreds of MB, while nobody scrolls past the first few thousand.
+# Every result is still kept by the engine and written to the report.
+MAX_TREE_ROWS = 5_000
+
 # Light/dark palettes.  Tag colors differ per theme so the Link column
 # stays readable on both.
 THEMES: dict[str, dict[str, str]] = {
@@ -133,6 +139,7 @@ class IndexerApp(tk.Tk):
         self.var_shown = tk.StringVar(value="0 rows")
         self._all_rows: list[str] = []      # iids in display (sorted) order
         self._row_tag: dict[str, str] = {}  # iid -> row tag
+        self._hidden_rows = 0               # results past MAX_TREE_ROWS
         self._sort_desc: dict[str, bool] = {}
 
         self._setup_style()
@@ -691,7 +698,7 @@ class IndexerApp(tk.Tk):
                     self.tree.detach(iid)
             except tk.TclError:
                 continue
-        self.var_shown.set(f"{idx}/{len(self._all_rows)} rows")
+        self._update_shown_label()
 
     def _clear_filter(self) -> None:
         self.var_search.set("")
@@ -699,12 +706,31 @@ class IndexerApp(tk.Tk):
         self._apply_result_filter()
 
     def _insert_result_row(self, values: tuple, tag: str) -> None:
-        """Insert a result row honoring the active filter immediately."""
+        """Insert a result row honoring the active filter immediately.
+
+        The table is capped at ``MAX_TREE_ROWS``: past that the row is only
+        counted, not inserted.  ``indexer.results`` keeps every row for the
+        report, and the row counter says how many are not displayed.
+        """
+        if len(self._all_rows) >= MAX_TREE_ROWS:
+            self._hidden_rows += 1
+            return
         iid = self.tree.insert("", "end", values=values, tags=(tag,) if tag else ())
         self._all_rows.append(iid)
         self._row_tag[iid] = tag
         if not self._row_matches(iid):
             self.tree.detach(iid)
+
+    def _update_shown_label(self) -> None:
+        """Show "visible/total" plus the number of rows the cap holds back."""
+        shown = len(self.tree.get_children())
+        total = len(self._all_rows) + self._hidden_rows
+        if self._hidden_rows:
+            self.var_shown.set(
+                f"{shown}/{total} rows (display capped at {MAX_TREE_ROWS:,})"
+            )
+        else:
+            self.var_shown.set(f"{shown}/{total} rows")
 
     # ------------------------------------------------------------------
     # Data
@@ -1202,6 +1228,7 @@ class IndexerApp(tk.Tk):
         self.tree.delete(*self.tree.get_children())
         self._all_rows = []
         self._row_tag = {}
+        self._hidden_rows = 0
         self.var_shown.set("0 rows")
         self._backlinks = 0
         self._validation_skipped = 0
@@ -1274,14 +1301,16 @@ class IndexerApp(tk.Tk):
         def worker() -> None:
             try:
                 if want_check:
-                    ok: list[str] = []
-                    for u in good:
-                        url_ok, reason = self.indexer.check_url(u)
-                        if url_ok:
-                            ok.append(u)
-                        else:
-                            self._events.put(("skip", u, reason))
-                    urls_to_use = ok
+                    # Parallel, and the rejects are streamed to the table as
+                    # they are found instead of after the whole list is done.
+                    def report_check(checked_url: str, ok: bool, reason: str) -> None:
+                        if not ok:
+                            self._events.put(("skip", checked_url, reason))
+
+                    checked = engine.check_urls(
+                        self.indexer, good, on_checked=report_check
+                    )
+                    urls_to_use = [u for u, ok, _reason in checked if ok]
                 else:
                     urls_to_use = good
                 if urls_to_use:
@@ -1420,9 +1449,7 @@ class IndexerApp(tk.Tk):
                 self.var_queue.set(f"Q: {max(0, s.total - done)}")
                 self.var_lpm.set(f"LpM: {s.links_per_minute:.1f}")
             self.var_backlinks.set(f"Backlinks: {self._backlinks}")
-            self.var_shown.set(
-                f"{len(self.tree.get_children())}/{len(self._all_rows)} rows"
-            )
+            self._update_shown_label()
 
         self.after(150, self._poll)
 

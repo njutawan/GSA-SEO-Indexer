@@ -439,14 +439,16 @@ def cmd_submit(args) -> int:
 
     if settings.check_url:
         if not args.quiet:
-            print("Checking target URLs ...")
+            print(f"Checking {len(urls)} target URL(s) in parallel ...")
+        # Sequential checks made a 50-URL list wait for every timeout in turn;
+        # engine.check_urls probes 8 at a time and keeps the input order.
+        checked = engine.check_urls(indexer, urls)
         ok_urls = []
-        for u in urls:
-            ok, reason = indexer.check_url(u)
+        for checked_url, ok, reason in checked:
             if ok:
-                ok_urls.append(u)
+                ok_urls.append(checked_url)
             elif not args.quiet:
-                print(f"  SKIP {u}  ({reason})")
+                print(f"  SKIP {checked_url}  ({reason})")
         urls = ok_urls
         if not urls:
             print("No indexable URLs left.", file=sys.stderr)

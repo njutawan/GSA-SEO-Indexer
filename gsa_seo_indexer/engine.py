@@ -372,8 +372,14 @@ class Settings:
 # --------------------------------------------------------------------------
 # Statistics of a run
 # --------------------------------------------------------------------------
-@dataclass
+@dataclass(slots=True)
 class Result:
+    """One submission outcome.
+
+    ``slots`` keeps 300k+ rows of a large run from paying for a per-instance
+    ``__dict__``; ``dataclasses.asdict`` still serialises it unchanged.
+    """
+
     target: str
     url: str
     status: str  # submitted | failed | skipped | not-indexed
@@ -875,24 +881,79 @@ class Indexer:
                 time.sleep(random.uniform(0.01, 0.08))
             return res
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, self.settings.threads)) as pool:
-            for results in pool.map(worker, work):
-                if self._stop.is_set():
-                    break
-                for res in results:
-                    with self._lock:
-                        self.results.append(res)
-                        if res.status == "submitted":
-                            self.stats.submitted += 1
-                        elif res.status == "skipped":
-                            self.stats.skipped += 1
-                        else:
-                            self.stats.failed += 1
-                        self.stats.last_result = res
-                    if on_result:
-                        # notification only - the bookkeeping above is the
-                        # single owner of results and stats
-                        on_result(res)
+        # ``pool.map`` yields in submission order, so one request that sat on
+        # its timeout held back the progress of everything queued behind it
+        # (and made Stop look unresponsive).  Futures are therefore consumed in
+        # completion order - but only a small window is in flight at a time:
+        # submitting 100 URLs x 11k sites at once would mean a million futures
+        # in memory, which is the problem this change is meant to avoid.
+        in_flight = max(1, self.settings.threads) * 4
+        pending: dict[concurrent.futures.Future, tuple[PingTarget, list[str]]] = {}
+        work_iter = iter(work)
+
+        def submit_more(pool: concurrent.futures.ThreadPoolExecutor) -> None:
+            while len(pending) < in_flight:
+                try:
+                    item = next(work_iter)
+                except StopIteration:
+                    return
+                pending[pool.submit(worker, item)] = item
+
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=max(1, self.settings.threads)
+        ) as pool:
+            submit_more(pool)
+            try:
+                while pending:
+                    if self._stop.is_set():
+                        break
+                    done, _not_done = concurrent.futures.wait(
+                        pending,
+                        timeout=0.5,
+                        return_when=concurrent.futures.FIRST_COMPLETED,
+                    )
+                    if not done:
+                        # Nothing finished yet: loop back to re-check the stop
+                        # flag, so Stop reacts within half a second even when
+                        # every in-flight host is sitting on its timeout.
+                        continue
+                    for future in done:
+                        item = pending.pop(future)
+                        try:
+                            results = future.result()
+                        except Exception as exc:  # noqa: BLE001 - never kill the run
+                            # submit_batch already catches transport errors;
+                            # this is the last line of defence for a bug.
+                            results = [
+                                Result(
+                                    target=payload,
+                                    url=item[0].url,
+                                    status="failed",
+                                    error=str(exc)[:160],
+                                )
+                                for payload in item[1]
+                            ]
+                        for res in results:
+                            with self._lock:
+                                self.results.append(res)
+                                if res.status == "submitted":
+                                    self.stats.submitted += 1
+                                elif res.status == "skipped":
+                                    self.stats.skipped += 1
+                                else:
+                                    self.stats.failed += 1
+                                self.stats.last_result = res
+                            if on_result:
+                                # notification only - the bookkeeping above is
+                                # the single owner of results and stats
+                                on_result(res)
+                    submit_more(pool)
+            finally:
+                # Pending work must not start once the run is over; requests
+                # already in flight finish within the request timeout.
+                for queued in pending:
+                    queued.cancel()
+
         # A run that learned which hosts are dead carries that knowledge
         # into the next process - even a stopped run has usually already
         # discovered most of them.
@@ -1126,7 +1187,15 @@ class Indexer:
         path.parent.mkdir(parents=True, exist_ok=True)
         if self.settings.report_format == "json":
             with path.open("w", encoding="utf-8") as fh:
-                json.dump([asdict(r) for r in self.results], fh, indent=1)
+                # Streamed record by record: ``json.dump([asdict(r) for r in
+                # results])`` built a second copy of every row before writing
+                # anything, which is a multi-hundred-MB spike on a large run.
+                fh.write("[")
+                for index, result in enumerate(self.results):
+                    if index:
+                        fh.write(",")
+                    json.dump(asdict(result), fh, indent=1)
+                fh.write("]\n")
         else:
             with path.open("w", encoding="utf-8", newline="") as fh:
                 w = csv.writer(fh)
@@ -1200,6 +1269,60 @@ def validate_url(url: str) -> tuple[bool, str]:
         if "." not in host or " " in host:
             return False, "not a valid host"
     return True, "ok"
+
+
+# How many target URLs are liveness-checked at the same time before a run.
+CHECK_WORKERS = 8
+
+
+def check_urls(
+    indexer: "Indexer",
+    urls: Sequence[str],
+    workers: int = CHECK_WORKERS,
+    on_checked: Callable[[str, bool, str], None] | None = None,
+) -> list[tuple[str, bool, str]]:
+    """Check target URLs in parallel, keeping the input order.
+
+    ``Indexer.check_url`` costs one request per URL and the CLI/GUI ran them
+    back to back, so a 50-URL list with a few dead hosts meant minutes of
+    waiting before the first submission started.  Eight workers is enough:
+    the check is a liveness probe, and a bigger pool only multiplies the
+    connections aimed at the same few target domains.
+
+    ``on_checked(url, ok, reason)`` fires in completion order (the GUI streams
+    the rejects into the table while the rest are still being checked); the
+    return value is ordered like ``urls``.
+    """
+    urls = list(urls)
+    if not urls:
+        return []
+    results: list[tuple[str, bool, str] | None] = [None] * len(urls)
+
+    if len(urls) == 1 or workers <= 1:
+        for index, url in enumerate(urls):
+            ok, reason = indexer.check_url(url)
+            results[index] = (url, ok, reason)
+            if on_checked:
+                on_checked(url, ok, reason)
+        return [item for item in results if item is not None]
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(workers, len(urls))
+    ) as pool:
+        futures = {
+            pool.submit(indexer.check_url, url): index
+            for index, url in enumerate(urls)
+        }
+        for future in concurrent.futures.as_completed(futures):
+            index = futures[future]
+            try:
+                ok, reason = future.result()
+            except Exception as exc:  # noqa: BLE001 - one check never kills the run
+                ok, reason = False, str(exc)[:120]
+            results[index] = (urls[index], ok, reason)
+            if on_checked:
+                on_checked(urls[index], ok, reason)
+    return [item for item in results if item is not None]
 
 
 def _classify_link(body: str, payload: str) -> str:

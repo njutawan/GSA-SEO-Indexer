@@ -18,14 +18,14 @@ memakai TLS sama sekali. Itu plafon throughput yang sebenarnya, bukan latensi se
 | **P0** | `ssl.create_default_context()` dibuat **per request** (±29 ms, memuat CA bundle) | plafon ±34 req/s; ±5,6 menit CPU per run 11.669 target | ✅ **tuntas** |
 | **P0** | `_classify_link` memindai seluruh body (sampai 200 kB) dua kali walau target tidak ada di halaman | ±1,9 ms CPU per halaman "miss" (mayoritas respons) | ✅ **tuntas** |
 | **P0** | `max_sites` dipotong **dua kali** (di CLI/GUI *dan* di `run()`), dan `stats.total` dihitung sebelum pemotongan | `--sites 800` + 2 URL → hanya 400 situs yang benar-benar dikirimi; progress mandek 50% | ✅ **tuntas** |
-| **P1** | Cek URL pra-run berjalan **serial** (1 request per URL) | 50 URL × timeout 5 s = sampai 4 menit sebelum run dimulai | ⬜ belum |
-| **P1** | Tabel GUI menyimpan **semua** baris (333.800 baris untuk 50 URL × 6.676 host) | RAM ±51 MB hanya untuk objek `Result`, plus baris Tk; GUI melambat/hang | ⬜ belum |
-| **P1** | `pool.map()` = head-of-line blocking untuk `on_result()` | progress UI diam sampai request terlambat selesai; Stop tidak responsif | ⬜ belum |
-| **P1** | `report_format = json` menyalin seluruh hasil ke list baru | lonjakan memori 2× saat export | ⬜ belum |
+| **P1** | Cek URL pra-run berjalan **serial** (1 request per URL) | 10 URL × 300 ms: 3,00 s → **0,60 s** (5×) | ✅ **tuntas** |
+| **P1** | Tabel GUI menyimpan **semua** baris (333.800 baris untuk 50 URL × 6.676 host) | tabel dibatasi 5.000 baris + penghitung sisanya | ✅ **tuntas** |
+| **P1** | `pool.map()` = head-of-line blocking untuk `on_result()` | 1 request lambat tidak lagi menahan 5 request lain | ✅ **tuntas** |
+| **P1** | `report_format = json` menyalin seluruh hasil ke list baru | peak 28 MB → **0,3 MB** (100k baris) | ✅ **tuntas** |
 | **P2** | Host yang pernah sukses **tidak pernah** ditandai mati | host yang mati setelah sukses tetap dibayar timeout-nya di setiap URL | ⬜ belum |
 | **P2** | `DnsCache._entries` tidak pernah dipangkas / menyimpan objek exception | memori tumbuh antar-run; traceback ikut tersimpan | ⬜ belum |
 | **P2** | `connect timeout` tidak berpengaruh di jalur default (urllib hanya menerima satu timeout) | timeout koneksi 4 s vs read 5 s tidak dibedakan | ⬜ belum |
-| **P2** | Tidak ada test, CI, atau linter (6.300 LOC, 0 test) | regresi performa/correctness tidak terdeteksi | 🟡 sebagian (13 test + benchmark) |
+| **P2** | Tidak ada test, CI, atau linter (6.300 LOC, 0 test) | regresi performa/correctness tidak terdeteksi | 🟡 sebagian (39 test + benchmark) |
 | **P3** | Tiga jalur HTTP paralel (`submit_one`, `submit_batch`, `PooledHttpClient`) | perilaku (timeout, redirect, verify) mudah menyimpang | ⬜ belum |
 | **P3** | `Settings.random_delay = True`, padahal `config.ini` menulis `0` dan dokumentasi bilang "tidak ada manfaat" | sleep 10–80 ms di dalam worker untuk API call langsung | ⬜ belum |
 
@@ -153,61 +153,97 @@ python tools/bench_local.py 400 1           # 839,8 req/s
 
 ---
 
-## 5. Yang masih dibutuhkan (roadmap)
+## 5. P1 — selesai (dan dampak terukurnya)
 
-### P1 — dampak besar, perlu sedikit desain
+### 5.1 Cek URL pra-run paralel
 
-**5.1 Cek URL pra-run secara paralel** (`cli.py:431`, `gui.py` worker validation)
-Sekarang: `for u in urls: indexer.check_url(u)`. Satu URL mati = satu timeout penuh,
-berurutan. Ganti dengan `ThreadPoolExecutor(max_workers=min(8, len(urls)))`; hemat
-hingga menit-menit pada daftar 50+ URL. Risiko rendah, tidak mengubah semantik.
+`engine.check_urls()` memeriksa target 8 sekaligus (`CHECK_WORKERS`), mengembalikan
+hasil **sesuai urutan input** (supaya pesan `SKIP` di CLI tetap stabil) dan memanggil
+`on_checked()` dalam urutan selesai (supaya GUI bisa menampilkan baris yang ditolak
+sambil sisanya masih diperiksa). Dipakai CLI dan GUI.
 
-**5.2 Batasi baris tabel GUI** (`gui.py:701`)
-`_insert_result_row()` menambah satu baris Tk per hasil; 50 URL × 6.676 host = 333.800
-baris. Selain lambat, `_all_rows` + `_row_tag` tumbuh tanpa batas. Saran: simpan
-`Result` penuh di engine (untuk laporan), tampilkan maksimum N baris (mis. 5.000) +
-penghitung "… dan 328.800 baris lainnya", atau virtualisasi dengan `ttk.Treeview` yang
-di-truncate per tick.
+| | Serial | Paralel (8 worker) |
+|---|---|---|
+| 10 URL, tiap cek 300 ms | 3,00 s | **0,60 s** (5,0×) |
 
-**5.3 Ganti `pool.map` dengan `as_completed`** (`engine.py:903`)
-`pool.map` mengembalikan hasil **berurutan**, jadi satu request 5 detik menahan
-`on_result()` untuk semua hasil sesudahnya. Dengan `as_completed` + set future,
-progress dan Stop jadi responsif, dan tidak ada `list()` yang menahan hasil di memori.
+### 5.2 Tabel GUI dibatasi 5.000 baris
 
-**5.4 Tulis laporan secara streaming** (`engine.py:1153`)
-`json.dump([asdict(r) for r in self.results])` membuat salinan seluruh hasil (untuk
-333.800 baris: ±2× memori). Tulis per-record (JSON Lines atau manual `[`…`]`), dan
-pertimbangkan `@dataclass(slots=True)` untuk `Result` (Python 3.10+) yang memotong
-memori per baris cukup signifikan.
+`_insert_result_row()` berhenti menyisipkan baris setelah `MAX_TREE_ROWS = 5_000`;
+sisanya hanya dihitung (`_hidden_rows`) dan ditampilkan di penghitung:
+`5000/333800 rows (display capped at 5,000)`. Yang tidak berubah: `indexer.results`
+tetap menyimpan **semua** baris untuk laporan/ekspor, dan filter/sort tetap bekerja
+pada baris yang ditampilkan.
+
+### 5.3 Hasil dikirim dalam urutan selesai (`as_completed`)
+
+`pool.map()` menghasilkan hasil sesuai urutan pengiriman, jadi satu request yang
+tertahan sampai timeout menahan `on_result()` untuk semua request di belakangnya.
+Sekarang hasil dikonsumsi sesuai urutan **selesai** (`concurrent.futures.wait` dengan
+`FIRST_COMPLETED`), dengan dua pengaman:
+
+- **jendela in-flight = 4 × threads.** Mengirim 100 URL × 11k situs sekaligus berarti
+  satu juta future di memori — persis masalah yang mau dihindari. Hanya ±200 future
+  hidup pada 50 thread; sisanya masuk saat slot kosong.
+- **Stop diperiksa tiap 0,5 s**, jadi tombol Stop bereaksi walau semua host sedang
+  menunggu timeout, dan future yang belum mulai dibatalkan.
+
+Test regresinya: satu target yang tidur 300 ms harus tiba **terakhir**; 200 pekerjaan
+kecil tetap selesai semua; dan `stop()` pada 20 pekerjaan lambat tidak menguras antrean.
+
+### 5.4 Laporan streaming + `Result` ber-`slots`
+
+- JSON ditulis record-per-record (`[` … `]` tetap JSON valid, format tidak berubah).
+- `@dataclass(slots=True)` pada `Result` menghapus `__dict__` per baris.
+
+| Metrik | Sebelum | Sesudah |
+|---|---|---|
+| Peak memori tulis JSON, 100k baris | 28 MB | **0,3 MB** |
+| Memori 100k `Result` | 15,2 MB | **10,4 MB** (−31%) |
+
+### Verifikasi P1
+
+```bash
+python -m unittest discover -s tests -v     # 39 test
+```
+
+- `CheckUrlsTest` — paralel, urutan input, callback urutan selesai, exception → reject.
+- `RowCapTest` (dengan stub tkinter) — cap 5.000, penghitung sisanya, `Result` utuh.
+- `DeliveryOrderTest` — target lambat tiba terakhir; worker yang melempar exception
+  dicatat sebagai `failed`, bukan mematikan run.
+- `ReportTest` — JSON 25 baris valid, CSV header + N baris, `Result` tanpa `__dict__`.
+
+---
+
+## 6. Yang masih dibutuhkan (roadmap)
 
 ### P2 — correctness jangka panjang
 
-**5.5 Host yang pernah sukses tidak pernah dianggap mati** (`perf.py:94`)
+**6.1 Host yang pernah sukses tidak pernah dianggap mati** (`perf.py:94`)
 `record_failure()` hanya menandai `alive = False` bila `successes == 0`. Host yang
 sukses sekali lalu mati akan dibayar timeout-nya di setiap URL berikutnya. Tambahkan
 ambang "gagal berturut-turut" (mis. 2–3) sebelum menandai mati, atau decay skor.
 
-**5.6 `DnsCache` tumbuh tanpa batas** (`perf.py:218`)
+**6.2 `DnsCache` tumbuh tanpa batas** (`perf.py:218`)
 Entri tidak pernah dipangkas dan menyimpan objek exception (traceback ikut hidup).
 Pangkas entri kedaluwarsa secara periodik (mis. saat `len > 4096`) dan simpan
 `(type, str)` bukan instance exception. Catatan: cache ini mem-patch
 `socket.getaddrinfo` **seluruh proses** dan hanya mendukung satu cache aktif —
 dua `Indexer` bersamaan akan saling menimpa.
 
-**5.7 `connect timeout` tidak berlaku di jalur default**
+**6.3 `connect timeout` tidak berlaku di jalur default**
 `_timeout()` mengembalikan `max(connect_timeout, read_timeout)` dan urllib hanya
 menerima satu timeout, jadi `connect timeout = 4` tidak pernah dipakai; hanya
 `PooledHttpClient` yang membedakannya. Pilih salah satu: pakai pooled client sebagai
-default (dengan perbaikan 5.8), atau hapus opsi dari config agar tidak menyesatkan.
+default (dengan perbaikan 6.4), atau hapus opsi dari config agar tidak menyesatkan.
 
-**5.8 Connection pool: default `off` itu keputusan yang benar — untuk beban ini**
+**6.4 Connection pool: default `off` itu keputusan yang benar — untuk beban ini**
 `reuse_connections` mati secara default, dan itu wajar: setiap host hanya dikunjungi
 1–2 kali per run, sehingga keep-alive hampir tidak pernah terpakai (dan 96 koneksi
 terbuka malah membatasi host yang bisa dikerjakan bersamaan). Jangan "optimalkan"
 dengan menyalakannya; kalau mau, pakai hanya saat `len(urls) >= 10` **dan** thread
 lebih sedikit dari jumlah host, lalu ukur ulang.
 
-**5.9 Gzip + baca body lebih pendek**
+**6.5 Gzip + baca body lebih pendek**
 Body dibaca sampai 200 kB (`max_body_bytes`) untuk sekadar mencari satu substring.
 Dua kandidat: kirim `Accept-Encoding: gzip` dan dekompres (mengurangi byte di jaringan),
 atau baca bertahap dan berhenti begitu target ditemukan. Yang kedua hanya menolong
@@ -229,13 +265,13 @@ halaman "hit"; mayoritas adalah miss, jadi ukur dulu sebelum dikerjakan.
   untuk index service berbayar yang membawa API key.
 - **`preflight` memakai `threads * 2` worker** → burst 100 socket; batasi ke angka
   absolut (mis. 64) agar tidak membentur limit file descriptor di Windows.
-- **CI + linter.** `tests/` sekarang berisi 13 test (unittest murni, tanpa dependency),
+- **CI + linter.** `tests/` sekarang berisi 39 test (unittest murni, tanpa dependency),
   jalankan `python -m unittest discover -s tests`. Tambahkan GitHub Actions matrix
   3.10–3.13 + `ruff check` (opsional sebagai dev-dependency, runtime tetap zero-dep).
 
 ---
 
-## 6. Yang sudah dikerjakan di branch ini
+## 7. Yang sudah dikerjakan di branch ini
 
 | File | Perubahan |
 |---|---|
@@ -246,9 +282,15 @@ halaman "hit"; mayoritas adalah miss, jadi ukur dulu sebelum dikerjakan.
 | `gsa_seo_indexer/engine.py` | `cap_targets()`: batas = N host, kedua bentuk URL dipertahankan, `stats.total` akurat (P0 #3) |
 | `gsa_seo_indexer/cli.py`, `gui.py` | tidak lagi memotong daftar sendiri; banner melaporkan situs unik |
 | `tools/bench_local.py` | benchmark offline: server lokal, N request, req/s + median/p95 |
-| `tests/test_engine.py` | 25 test: reuse context (termasuk end-to-end), klasifikasi, cap situs, smoke `submit_one` |
+| `gsa_seo_indexer/engine.py` | `check_urls()`: cek target paralel, urutan hasil stabil (P1 #1) |
+| `gsa_seo_indexer/cli.py`, `gui.py` | memakai `check_urls()`; GUI menampilkan penolakan saat ditemukan |
+| `gsa_seo_indexer/gui.py` | `MAX_TREE_ROWS = 5_000`: tabel dibatasi, sisa baris dihitung (P1 #2) |
+| `gsa_seo_indexer/engine.py` | `as_completed()` + `cancel()`: tidak ada head-of-line blocking (P1 #3) |
+| `gsa_seo_indexer/engine.py` | laporan JSON streaming + `Result(slots=True)` (P1 #4) |
+| `tests/test_engine.py` | 36 test: P0 + `check_urls`, urutan pengiriman, jendela kerja, laporan |
+| `tests/test_gui_rows.py` | 3 test: cap baris tabel GUI (dengan stub tkinter) |
 
-## 7. Cara mengukur ulang
+## 8. Cara mengukur ulang
 
 ```bash
 # 400 request lewat 16 thread, server lokal tanpa latensi
@@ -259,6 +301,9 @@ python tools/bench_local.py 400 1
 
 # test regresi (tanpa dependency tambahan)
 python -m unittest discover -s tests -v
+
+# hanya test cap baris GUI (jalan juga tanpa tkinter, memakai stub)
+python -m unittest tests.test_gui_rows -v
 ```
 
 Untuk mengukur dampak di jaringan nyata, jalankan run yang sama dua kali dengan build
