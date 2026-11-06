@@ -33,15 +33,25 @@ dependencies = []
 [project.scripts]
 gsa-seo-indexer = "gsa_seo_indexer.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/njutawan/GSA-SEO-Indexer"
+Source = "https://github.com/njutawan/GSA-SEO-Indexer"
+Issues = "https://github.com/njutawan/GSA-SEO-Indexer/issues"
+Changelog = "https://github.com/njutawan/GSA-SEO-Indexer/blob/main/OPTIMIZATION-REVIEW.md"
+
 [project.optional-dependencies]
 # Development only; the runtime package still has zero dependencies.
 dev = ["ruff>=0.6"]
+# Building and publishing a release (used by .github/workflows/release.yml).
+release = ["build>=1.2", "twine>=5"]
 
 [tool.setuptools]
 packages = ["gsa_seo_indexer"]
 
 [tool.setuptools.package-data]
-gsa_seo_indexer = ["data/*", "index_service/*"]
+# Everything the runtime opens by path.  "assets/*" was missing until the
+# packaging check was added: a wheel installed from PyPI had no tray/GUI icon.
+gsa_seo_indexer = ["data/*", "index_service/*", "assets/*"]
 
 [tool.ruff]
 line-length = 110

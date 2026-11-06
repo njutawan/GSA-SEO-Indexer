@@ -38,3 +38,32 @@ jobs:
           python -m gsa_seo_indexer.cli --version
           python -m gsa_seo_indexer.cli sites --count
           python -m gsa_seo_indexer.cli services --list
+
+  package:
+    name: Wheel contains the runtime data
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install "build>=1.2"
+
+      - name: Build sdist + wheel
+        run: python -m build
+
+      - name: Check wheel contents
+        run: python tools/check_package.py
+
+      - name: Install the wheel and run the CLI from site-packages
+        run: |
+          python -m venv /tmp/venv
+          /tmp/venv/bin/pip install dist/*.whl
+          /tmp/venv/bin/gsa-seo-indexer --version
+          /tmp/venv/bin/gsa-seo-indexer sites --count
+          /tmp/venv/bin/gsa-seo-indexer services --list | head -3

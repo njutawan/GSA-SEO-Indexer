@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-measure every optimisation claim from P0 to P10, offline.
+"""Re-measure every optimisation claim from P0 to P11, offline.
 
 The numbers in ``OPTIMIZATION-REVIEW.md`` were produced by one-off commands
 spread over three phases; this script turns them into a single re-runnable
@@ -10,7 +10,7 @@ CPU/memory claims are measured directly.
 Usage::
 
     python tools/verify_all.py            # all checks, table + exit code
-    python tools/verify_all.py --only p2  # one phase (p0..p10)
+    python tools/verify_all.py --only p2  # one phase (p0..p11)
 
 Every line prints the *measured* value next to the claim it backs, so a
 regression shows up as FAIL with the number that moved, not as a vague
@@ -1131,6 +1131,19 @@ def p10_asyncio() -> tuple[str, bool]:
     )
 
 
+def p11_package() -> tuple[str, bool]:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "tools" / "check_package.py")],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    line = (result.stdout or result.stderr).strip().splitlines()
+    detail = line[0] if line else "tanpa keluaran"
+    return detail.replace("[PASS] paket: ", "").replace("[FAIL] paket: ", ""), result.returncode == 0
+
+
 CHECKS = [
     ("p0", "TLS context dibagi per proses", p0_shared_tls),
     ("p0", "Throughput 16 thread", p0_throughput_16),
@@ -1162,14 +1175,18 @@ CHECKS = [
     ("p8", "Gzip menghemat kabel", p8_gzip),
     ("p9", "Retry 429/503 menghormati Retry-After", p9_retry),
     ("p10", "Transport asyncio setara", p10_asyncio),
+    ("p11", "Paket PyPI lengkap", p11_package),
 ]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P10.")
+    parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P11.")
     parser.add_argument(
         "--only",
-        choices=["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9", "p10"],
+        choices=[
+            "p0", "p1", "p2", "p3", "p4", "p5",
+            "p6", "p7", "p8", "p9", "p10", "p11",
+        ],
         help="satu fase saja",
     )
     args = parser.parse_args(argv)
