@@ -9,6 +9,9 @@ DNS cache, dedupe per host, skip host yang timeout), tetapi **hot path per-reque
 membuang ~29 ms CPU untuk setiap request** — bahkan untuk target `http://` yang tidak
 memakai TLS sama sekali. Itu plafon throughput yang sebenarnya, bukan latensi server.
 
+> Angka di paragraf itu adalah **keadaan saat audit** (commit `b649ab2`). Semua temuan
+> P0–P7 di bawah sudah dikerjakan di branch ini; tabel §1 menyebut angka sesudahnya.
+
 ---
 
 ## 1. Ringkasan eksekutif
@@ -25,10 +28,13 @@ memakai TLS sama sekali. Itu plafon throughput yang sebenarnya, bukan latensi se
 | **P2** | Host yang pernah sukses **tidak pernah** ditandai mati | 5.000 URL: 5.000 request sia-sia → **2** | ✅ **tuntas** |
 | **P2** | `DnsCache._entries` tidak pernah dipangkas / menyimpan objek exception | 20.000 host → tabel dibatasi **10.000** entri; exception tidak disimpan | ✅ **tuntas** |
 | **P2** | `connect timeout` tidak berpengaruh di jalur default (urllib hanya menerima satu timeout) | host mati: **5,03 s → 4,00 s** (atau 1,00 s dengan `--timeout 1`) | ✅ **tuntas** |
-| **P2** | Tidak ada test, CI, atau linter (6.300 LOC, 0 test) | regresi performa/correctness tidak terdeteksi | 🟡 sebagian (39 test + benchmark) |
-| **P6** | `self.results` menahan **semua** baris sampai run selesai | 660k baris ≈ 115 MB; kini puncak datar (400k baris: 101 MB → **17 MB**) | ✅ **tuntas** |
-| **P3** | Tiga jalur HTTP paralel (`submit_one`, `submit_batch`, `PooledHttpClient`) | perilaku (timeout, redirect, verify) mudah menyimpang | ⬜ belum |
-| **P3** | `Settings.random_delay = True`, padahal `config.ini` menulis `0` dan dokumentasi bilang "tidak ada manfaat" | sleep 10–80 ms di dalam worker untuk API call langsung | ⬜ belum |
+| **P2** | Tidak ada test, CI, atau linter (6.300 LOC, 0 test) | regresi performa/correctness tidak terdeteksi | ✅ **tuntas** (123 test + CI + `ruff`) |
+| **P3** | Tiga jalur HTTP paralel (`submit_one`, `submit_batch`, `PooledHttpClient`) | perilaku (timeout, redirect, verify) mudah menyimpang | ✅ **tuntas** (§7) |
+| **P3** | `Settings.random_delay = True`, padahal `config.ini` menulis `0` dan dokumentasi bilang "tidak ada manfaat" | sleep 10–80 ms di dalam worker untuk API call langsung | ✅ **tuntas** (§7) |
+| **P4** | Opener dibangun ulang per request; JSON `indent=1`; "run enabled" sekuensial; GUI menguras queue tanpa batas | opener 844 → **1.140 req/s**; JSON 100k **1,90 → 1,24 s**; 48 service **9,4 → 1,2 s** | ✅ **tuntas** (§12) |
+| **P5** | `_classify_link` menjalankan satu alternasi besar atas seluruh body untuk memutuskan "listed" | halaman 165 kB: **1,43 → 0,41 ms** (3,5×), 280k kasus ekuivalen | ✅ **tuntas** (§13) |
+| **P6** | `self.results` menahan **semua** baris sampai run selesai | 660k baris ≈ 115 MB; kini puncak datar (400k baris: 101 MB → **17 MB**) | ✅ **tuntas** (§14) |
+| **P7** | Target `mode="post"` tetap dikirim sebagai **GET tanpa body** — `with_payload()` mengembalikan URL dasar dan semua transport menulis `GET` mati | target POST tidak pernah menyampaikan URL sama sekali; hasilnya "submitted" untuk halaman yang tidak menerima apa pun | ✅ **tuntas** (§15) |
 
 ---
 
@@ -383,7 +389,7 @@ dikerjakan.
 | 5 | `self.results` menahan semua baris sampai run selesai | **17,7 MB / 100k baris** (slots) | jendela 20k baris + tumpah ke disk: **400k baris puncak 17 MB** (datar), laporan identik | sedang — **selesai tanpa mengubah API**: `ResultStore` tetap list-like (`append`/`iter`/`len`) | **selesai** (§14) |
 | 6 | Tidak ada `Accept-Encoding: gzip` di jalur urllib | body sampai 200 kB dikirim utuh | ±3–5× lebih sedikit byte pada halaman yang compressible | sedang (perlu A/B pada list asli; sebagian situs rewel soal header) | **belum — butuh A/B jaringan** |
 | 7 | 429/503 hanya dicatat `failed`, `Retry-After` diabaikan | satu baris hilang per kejadian | retry/backoff dalam run menaikkan yield, bukan kecepatan | rendah (perlu plafon percobaan) | **belum — ubah semantik** |
-| 8 | `PingTarget(mode="post")` tidak pernah mengirim body | `submit_one` selalu GET | fitur belum lengkap, bukan bottleneck | — (tidak ada target yang memakainya) | **belum — fitur** |
+| 8 | `PingTarget(mode="post")` tidak pernah mengirim body | `submit_one` selalu GET, jadi target POST mengirim **nol** URL | kini form body sungguhan di kedua transport; perilaku GET tidak berubah | rendah (default tetap `append`/`query`, 15 test baru) | **selesai** (§15) |
 | 9 | `Gui._poll()` menguras queue tanpa batas per tick | — (tkinter tidak ada di sandbox) | batasi ±500 baris/tick agar jendela tetap responsif saat burst | rendah | **selesai** (§12.4) |
 | 10 | `UrlWatcher._seen` tumbuh tanpa batas pada watch panjang | — | LRU/batas ukuran | rendah | **selesai** (§12.4) |
 
@@ -430,7 +436,7 @@ workflow rilis dari tag.
 | `gsa_seo_indexer/emulator.py` | `do_GET` mendefinisikan `path` (F821 yang ditemukan ruff) |
 | `.github/workflows/ci.yml`, `pyproject.toml` | CI matrix 3.10–3.13, `ruff check`, dev extra (P3 #5) |
 | `gsa_seo_indexer/engine.py`, `httpclient.py` | **fix P4**: timeout socket di-set ulang ke `read_timeout` setelah connect (urllib dan pooled) — read timeout sebelumnya tertimpa connect timeout |
-| `tools/verify_all.py` | skrip verifikasi ulang 26 pemeriksaan P0–P6, offline, `--only p0..p6` |
+| `tools/verify_all.py` | skrip verifikasi ulang 27 pemeriksaan P0–P7, offline, `--only p0..p7` |
 | `gsa_seo_indexer/engine.py` | `_opener()` di-cache per (proxy, verify) — 200 request = 1 build (P4 #1) |
 | `gsa_seo_indexer/engine.py` | laporan JSON compact, ditulis per 512 baris (`_dump_row`) (P4 #2) |
 | `gsa_seo_indexer/services.py` | `submit_many()`: 8 service paralel, urutan hasil tetap, bisa di-Stop (P4 #3) |
@@ -444,6 +450,9 @@ workflow rilis dari tag.
 | `gsa_seo_indexer/resultstore.py` | `ResultStore`: jendela `max_memory` baris di RAM, sisanya tumpah ke satu file pickle sementara (urut, thread-safe), `clear()`/`close()` menghapus file (P6) |
 | `gsa_seo_indexer/engine.py` | `Settings.max_results_in_memory = 20_000`; `Indexer.results` memakai `ResultStore` (pack/unpack tuple); `RunStats.indexable`/`listed` dihitung saat hasil masuk (P6) |
 | `gsa_seo_indexer/cli.py` | ringkasan memakai `stats.indexable`/`stats.listed`, bukan memindai seluruh `indexer.results` (yang kini bisa ada di disk) (P6) |
+| `gsa_seo_indexer/httpclient.py` | `PooledHttpClient.request(method, url, body=…)`: jalur pool tidak lagi GET-only; `get()` tetap jadi pembungkus tipis, redirect 301/302/303 → GET, 307/308 → metode+body diulang (P7) |
+| `gsa_seo_indexer/engine.py` | `PingTarget.body` (default `url={enc}`), `http_method`, `post_body()`; `_request()`/`_fetch()` menerima `method`/`data`; `submit_one`/`submit_batch` mengirim POST untuk target `post`; `mode` dari JSON dinormalkan (P7) |
+| `tests/test_post_target.py` | 15 test: body form, GET tidak berubah (tanpa body/Content-Type), kedua transport, 303 jadi GET, 307 mengulang body, batch satu body, normalisasi loader |
 | `tests/test_resultstore.py` | 8 test: jendela tanpa disk, tumpahan menjaga urutan, `clear()`/`close()`, pack/unpack, dan integrasi engine (laporan + ringkasan identik) |
 | `tests/test_engine.py` | 57 test: P0/P1/P2/P3 + `ReadTimeoutTest`, `OpenerCacheTest`, `ReportFormatTest` |
 | `tests/test_gui_rows.py` | 3 test: cap baris tabel GUI (dengan stub tkinter) |
@@ -466,7 +475,7 @@ python tools/bench_local.py 400 16
 # benar-benar memisahkan overhead klien: 1 thread
 python tools/bench_local.py 400 1
 
-# verifikasi ulang semua klaim P0-P6 sekaligus (offline, ±29 s)
+# verifikasi ulang semua klaim P0-P7 sekaligus (offline, ±34 s)
 python tools/verify_all.py
 
 # ekuivalensi klasifikasi: implementasi lama vs sekarang, 40k kasus acak
@@ -481,6 +490,7 @@ python -m unittest tests.test_perf_cache -v   # host cache + DNS cache
 python -m unittest tests.test_gui_rows -v     # cap tabel GUI (stub tkinter)
 python -m unittest tests.test_cli_timeouts -v # pemetaan opsi timeout
 python -m unittest tests.test_resultstore -v  # tumpahan hasil ke disk
+python -m unittest tests.test_post_target -v  # target POST + redirect
 python -m unittest tests.test_engine.ReadTimeoutTest -v  # connect vs read timeout
 ```
 
@@ -496,7 +506,7 @@ Semua klaim P0–P3 diukur ulang dari nol oleh satu skrip, bukan dari catatan
 tahap sebelumnya:
 
 ```bash
-python tools/verify_all.py            # 26 pemeriksaan P0-P6 (±29 s)
+python tools/verify_all.py            # 27 pemeriksaan P0-P7 (±34 s)
 python tools/verify_all.py --only p2  # satu fase
 ```
 
@@ -637,7 +647,7 @@ biaya klien.
 ```bash
 python -m unittest discover -s tests -v    # 92 test
 python tools/verify_all.py --only p4       # 4 pemeriksaan
-python tools/verify_all.py                 # 26 pemeriksaan semua fase
+python tools/verify_all.py                 # 27 pemeriksaan semua fase
 python tools/bench_local.py 400 1          # +24% vs commit sebelumnya
 ```
 
@@ -847,3 +857,89 @@ alokasi dilacak - itu biaya alat ukurnya, bukan biaya kode.
 python -m unittest discover -s tests -v      # 108 test (+8)
 python tools/verify_all.py --only p6         # 1 pemeriksaan
 ```
+
+---
+
+## 15. P7 — target POST akhirnya mengirim body
+
+`PingTarget` sudah punya `mode="post"` sejak awal, dan `load_modern_targets()`
+membacanya dari JSON. Tapi tidak ada satu pun bagian transport yang
+menghormatinya:
+
+1. `with_payload()` mengembalikan `self.url` apa adanya untuk mode `post`
+   (memang benar — URL-nya tidak diubah);
+2. `Indexer._request()` menulis `method="GET"` mati;
+3. `_fetch()` memakai `PooledHttpClient.get()`, dan `_get_once()` memanggil
+   `conn.request("GET", ...)` — juga mati.
+
+Akibatnya target `post` mengirim **GET ke URL dasar tanpa parameter apa pun**.
+Situs menjawab halaman biasa, `_classify_link()` tidak menemukan target, dan
+hasilnya tercatat `submitted` dengan `indexable=False`. Tidak ada error, tidak
+ada baris `failed`: submission-nya hanya tidak pernah terjadi. Ini bug
+kebenaran, bukan soal kecepatan.
+
+### 15.1 Bentuk request sekarang
+
+| `mode` | Request line | Body |
+|---|---|---|
+| `append` | `GET <base><target>` | — |
+| `query` | `GET <base>?url=<enc>` | — |
+| `post` | `POST <base>` | `url=<enc>` (default), `Content-Type: application/x-www-form-urlencoded`, `Content-Length` diisi otomatis |
+
+Body-nya templat, memakai placeholder yang sama dengan URL (`{url}` mentah,
+`{enc}` ter-encode). Bisa diubah per target lewat JSON:
+
+```json
+{"url": "https://situs.example/ping", "mode": "post", "body": "links[]={enc}"}
+```
+
+`body: ""` mengirim POST tanpa payload (beberapa endpoint hanya butuh
+sentuhan). `mode` yang tidak dikenal (`"telepathy"`, atau `" POST "` hasil
+edit tangan) dinormalkan: yang pertama jatuh ke `append`, yang kedua jadi
+`post` - daftar lama tetap jalan, tapi salah ketik tidak lagi diam-diam
+berubah jadi GET.
+
+### 15.2 Redirect tetap mengikuti RFC
+
+| Status | Kelanjutan |
+|---|---|
+| 301/302/303 | `GET` tanpa body (303 memang berarti "ambil hasilnya dengan GET") |
+| 307/308 | metode **dan** body diulang |
+
+urllib sendiri menolak POST + 307 (`HTTPRedirectHandler.redirect_request`
+melempar `HTTPError` untuk POST kecuali 301/302/303), jadi perilaku 307 hanya
+ada di jalur pool — dan itu diuji.
+
+### 15.3 Yang dijaga agar tidak berubah
+
+Target `GET` harus tetap **persis** seperti sebelumnya: tidak ada body, tidak
+ada `Content-Type`, header set sama, dan `_fetch()` tetap memanggil `get()`
+(metode yang sudah dikenal semua test double). Tiga test khusus menjaga ini:
+satu untuk urllib, satu untuk pool, satu untuk `submit_batch`.
+
+### 15.4 Bukti
+
+```bash
+python -m unittest tests.test_post_target -v   # 15 test
+python tools/verify_all.py --only p7           # 1 pemeriksaan
+```
+
+- `P7 Target POST mengirim body` — server lokal menerima
+  `POST /ping` dengan body `url=http%3A%2F%2Ft.example%2F` di **kedua**
+  transport, `Content-Type` benar, dan hasilnya `submitted` + `indexable=True`;
+  request GET berikutnya tidak membawa `Content-Type`/`Content-Length`.
+- Test lain mengunci: template kustom, body kosong, batch (satu request, body
+  gabungan), 303 → GET, 307 → POST+body, dan normalisasi `mode` dari JSON.
+
+### 15.5 Yang tidak diukur, dan risikonya
+
+- Tidak ada endpoint POST sungguhan yang diuji di internet; semua bukti dari
+  server lokal.
+- Pool mengulang satu kali saat koneksi gagal (`_get_once`). Kalau koneksi
+  mati **setelah** server memproses request, POST bisa terkirim dua kali.
+  Endpoint ping idempoten (URL yang sama), dan percobaan ulang hanya terjadi
+  ketika koneksi gagal, tapi ini bukan jaminan "tepat sekali".
+- Belum ada target `post` di `modern_targets.json` bawaan: fitur ini
+  melengkapi jalur yang sudah ada di format data, bukan menambah endpoint baru.
+- Deteksi 401/403/429 dan retry/backoff tetap seperti sebelumnya — itu masih
+  item terpisah (§8 #7) dan sengaja tidak diubah di sini.

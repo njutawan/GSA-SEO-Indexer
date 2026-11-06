@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-measure every optimisation claim from P0 to P3, offline.
+"""Re-measure every optimisation claim from P0 to P7, offline.
 
 The numbers in ``OPTIMIZATION-REVIEW.md`` were produced by one-off commands
 spread over three phases; this script turns them into a single re-runnable
@@ -10,7 +10,7 @@ CPU/memory claims are measured directly.
 Usage::
 
     python tools/verify_all.py            # all checks, table + exit code
-    python tools/verify_all.py --only p2  # one phase (p0/p1/p2/p3)
+    python tools/verify_all.py --only p2  # one phase (p0..p7)
 
 Every line prints the *measured* value next to the claim it backs, so a
 regression shows up as FAIL with the number that moved, not as a vague
@@ -843,6 +843,54 @@ def p6_result_store() -> tuple[str, bool]:
     )
 
 
+def p7_post_target() -> tuple[str, bool]:
+    page = '<html><a href="http://t.example/">t.example</a></html>'
+    want = b"url=http%3A%2F%2Ft.example%2F"
+
+    with serve(body=page) as (srv, base):
+        ix = _harness()
+        try:
+            post_res = ix.submit_one(PingTarget(url=f"{base}/ping", mode="post"), "http://t.example/")
+            get_res = ix.submit_one(
+                PingTarget(url=f"{base}/?url=", mode="query"), "http://t.example/"
+            )
+        finally:
+            ix.close()
+        with srv.lock:
+            headers = list(srv.seen)
+            urllib_body = srv.post_bodies[0] if srv.post_bodies else b""
+
+    with serve(body=page) as (srv2, base2):
+        ix = _harness(reuse_connections=True)
+        try:
+            pooled_res = ix.submit_one(
+                PingTarget(url=f"{base2}/ping", mode="post"), "http://t.example/"
+            )
+        finally:
+            ix.close()
+        with srv2.lock:
+            pooled_body = srv2.post_bodies[0] if srv2.post_bodies else b""
+
+    post_ok = (
+        post_res.status == "submitted"
+        and post_res.indexable
+        and urllib_body == want
+        and headers[0].get("content-type") == "application/x-www-form-urlencoded"
+    )
+    get_ok = (
+        get_res.status == "submitted"
+        and "content-type" not in headers[1]
+        and "content-length" not in headers[1]
+    )
+    pooled_ok = pooled_res.status == "submitted" and pooled_body == want
+    ok = post_ok and get_ok and pooled_ok
+    return (
+        f'POST body "{urllib_body.decode()[:40]}" (urllib ok={post_ok}, pool ok={pooled_ok}); '
+        f"GET tanpa body={get_ok}; hasil post: {post_res.status}, indexable={post_res.indexable}",
+        ok,
+    )
+
+
 CHECKS = [
     ("p0", "TLS context dibagi per proses", p0_shared_tls),
     ("p0", "Throughput 16 thread", p0_throughput_16),
@@ -870,14 +918,15 @@ CHECKS = [
     ("p4", "Batas UI + watcher", p4_ui_bounds),
     ("p5", "Klasifikasi tetap setara", p5_classifier),
     ("p6", "Hasil dibatasi di memori", p6_result_store),
+    ("p7", "Target POST mengirim body", p7_post_target),
 ]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P3.")
+    parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P7.")
     parser.add_argument(
         "--only",
-        choices=["p0", "p1", "p2", "p3", "p4", "p5", "p6"],
+        choices=["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7"],
         help="satu fase saja",
     )
     args = parser.parse_args(argv)

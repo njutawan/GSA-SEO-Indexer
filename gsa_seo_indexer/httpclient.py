@@ -245,10 +245,31 @@ class PooledHttpClient:
         headers: dict[str, str] | None = None,
         follow_redirects: bool = True,
     ) -> Response:
+        """GET ``url``; kept as the name every existing caller uses."""
+        return self.request("GET", url, headers=headers, follow_redirects=follow_redirects)
+
+    def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str] | None = None,
+        body: str | bytes | None = None,
+        follow_redirects: bool = True,
+    ) -> Response:
+        """Send one request, following redirects the way a browser does.
+
+        ``mode="post"`` targets need a real body, and the pool used to be a
+        GET-only client: ``conn.request("GET", ...)`` was hard-coded, so a
+        POST target silently went out as a GET.  Redirects keep their RFC
+        shape too - 301/302/303 turn the follow-up into a GET (a 303 means
+        exactly that), 307/308 replay the method *and* the body.
+        """
+        method = method.upper()
         started = time.perf_counter()
         current = url
+        payload = body
         for _hop in range(self.max_redirects + 1):
-            resp = self._get_once(current, headers)
+            resp = self._get_once(current, headers, method, payload)
             if resp.error and resp.status == 0:
                 return resp
             if follow_redirects and resp.status in (301, 302, 303, 307, 308):
@@ -257,6 +278,8 @@ class PooledHttpClient:
                     resp.elapsed_ms = int((time.perf_counter() - started) * 1000)
                     return resp
                 current = _join(current, location)
+                if resp.status in (301, 302, 303):
+                    method, payload = "GET", None
                 continue
             resp.elapsed_ms = int((time.perf_counter() - started) * 1000)
             resp.final_url = current
@@ -265,7 +288,13 @@ class PooledHttpClient:
         resp.final_url = current
         return resp
 
-    def _get_once(self, url: str, headers: dict[str, str] | None) -> Response:
+    def _get_once(
+        self,
+        url: str,
+        headers: dict[str, str] | None,
+        method: str = "GET",
+        body: str | bytes | None = None,
+    ) -> Response:
         parts = urlsplit(url)
         scheme = (parts.scheme or "http").lower()
         host = parts.hostname or ""
@@ -292,6 +321,12 @@ class PooledHttpClient:
             # "Upgrade-Insecure-Requests" is deliberately NOT sent: some of
             # these sites run Mod_Security and answer 406 when they see it.
         }
+        data = body.encode("utf-8") if isinstance(body, str) else body
+        if data is not None:
+            # A body without these two headers is either ignored or answered
+            # with 411 by the sites that expect a form post.
+            req_headers["Content-Type"] = "application/x-www-form-urlencoded"
+            req_headers["Content-Length"] = str(len(data))
         if headers:
             req_headers.update(headers)
 
@@ -320,9 +355,11 @@ class PooledHttpClient:
                 if self.proxy and scheme != "https":
                     # plain HTTP through a proxy: the request line carries
                     # the absolute URL
-                    conn.request("GET", f"http://{parts.netloc}{path}", headers=req_headers)
+                    conn.request(
+                        method, f"http://{parts.netloc}{path}", body=data, headers=req_headers
+                    )
                 else:
-                    conn.request("GET", path, headers=req_headers)
+                    conn.request(method, path, body=data, headers=req_headers)
                 raw = conn.getresponse()
                 body = raw.read(MAX_BODY)
                 hdrs = {k.lower(): v for k, v in raw.getheaders()}

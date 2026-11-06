@@ -153,12 +153,14 @@ Key flags: `--threads`, `--proxy`, `--report`, `--modern`, `--batch`, `--fast`,
 - 🎛️ **config.ini** — keys mirror the original GSA config; can read GSA's own `config.ini`
 - 🔐 **Separate API keys** — `keys.json`, never written to reports; paid index
   services **always** verify the TLS certificate
-- 🧪 **108 tests + CI** — `python -m unittest discover -s tests`, Python 3.10–3.13
+- 🧪 **123 tests + CI** — `python -m unittest discover -s tests`, Python 3.10–3.13
   matrix plus `ruff check` (dev-only; the runtime stays dependency-free)
 - ⚡ **Parallel index services** — "Run enabled" submits to 8 services at once
   (48 services: 9.4 s → 1.2 s); the CLI has `services --run-enabled`
 - 📉 **Bounded result memory** — 400,000-row run: peak **101 MB → 17 MB**; older rows
   spill to a temporary file, the report stays identical and in the same order
+- 📮 **Real `mode="post"` targets** — the form body is actually sent (a POST target used
+  to go out as an empty GET), on both the urllib and the `--pool` path
 
 ---
 

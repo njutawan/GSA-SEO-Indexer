@@ -119,6 +119,12 @@ PLAIN_HOST_TARGETS: tuple[str, ...] = (
 )
 
 
+# Body sent to a ``mode="post"`` target when the target does not name its own
+# form.  It mirrors the ``?url=`` shape the query targets use, because the
+# sites that accept a form post expect exactly that parameter.
+DEFAULT_POST_BODY = "url={enc}"
+
+
 @dataclass(frozen=True)
 class PingTarget:
     """A single destination that accepts a URL for indexing.
@@ -133,12 +139,29 @@ class PingTarget:
         ``<base>?url=<urlencoded target>`` - used for the statistic sites that
         expose the submitted URL through a query parameter.
     ``post``
-        ``<base>`` with the target sent as the request body.
+        ``<base>`` with the target sent as the request body.  ``body`` is the
+        form template (``url={enc}`` by default); the same ``{url}``/``{enc}``
+        placeholders as the URL are expanded, and an empty ``body`` sends no
+        payload at all.
     """
 
     url: str
     kind: str = "statistics"  # statistics | plain | index_service
     mode: str = "append"
+    body: str = DEFAULT_POST_BODY
+
+    @property
+    def http_method(self) -> str:
+        """``POST`` for a ``post`` target, ``GET`` for everything else."""
+        return "POST" if self.mode == "post" else "GET"
+
+    def post_body(self, payload: str) -> str:
+        """Render the form body for ``payload`` (``""`` when there is none)."""
+        if not self.body:
+            return ""
+        return self.body.replace("{url}", payload).replace(
+            "{enc}", urllib.parse.quote(payload, safe="")
+        )
 
     def with_payload(self, payload: str) -> str:
         """Return the concrete request URL for ``payload``.
@@ -698,12 +721,29 @@ class Indexer:
             "Referer": "https://www.google.com/",
         }
 
-    def _request(self, url: str, accept: str = "") -> urllib.request.Request:
-        """Build the GET request for ``url`` with the shared headers."""
+    def _request(
+        self,
+        url: str,
+        accept: str = "",
+        method: str = "GET",
+        data: str | None = None,
+    ) -> urllib.request.Request:
+        """Build the request for ``url`` with the shared headers.
+
+        ``data`` turns it into a form post: urllib adds ``Content-Length`` by
+        itself, but ``Content-Type`` has to be named or the site ignores the
+        body.  A ``GET`` keeps exactly the shape it always had (no body, no
+        extra headers).
+        """
         headers = self._headers()
         if accept:
             headers["Accept"] = accept
-        return urllib.request.Request(url, headers=headers, method="GET")
+        if data is None:
+            return urllib.request.Request(url, headers=headers, method=method)
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+        return urllib.request.Request(
+            url, data=data.encode("utf-8"), headers=headers, method=method
+        )
 
     # -- URL health check -------------------------------------------------
     def check_url(self, url: str) -> tuple[bool, str]:
@@ -758,9 +798,16 @@ class Indexer:
                 error="host known dead",
             )
 
-        req = self._request(url)
+        method = target.http_method
+        data = target.post_body(payload) if method == "POST" else None
+        req = self._request(url, method=method, data=data)
         try:
-            body, code = self._fetch(url, req, proxy)
+            # A GET keeps the exact call it always made, so tests and callers
+            # that replace _fetch are unaffected by the POST support.
+            if data is None:
+                body, code = self._fetch(url, req, proxy)
+            else:
+                body, code = self._fetch(url, req, proxy, method=method, data=data)
             elapsed = int((time.perf_counter() - started) * 1000)
             if host:
                 self.host_cache.record_success(host, elapsed)
@@ -810,20 +857,43 @@ class Indexer:
                 error=str(exc)[:160],
             )
 
-    def _fetch(self, url: str, req: urllib.request.Request, proxy: str | None = None) -> tuple[str, int]:
+    def _fetch(
+        self,
+        url: str,
+        req: urllib.request.Request,
+        proxy: str | None = None,
+        method: str = "GET",
+        data: str | None = None,
+    ) -> tuple[str, int]:
         """Fetch a URL, preferring the pooled client.
 
         The pooled client keeps the connection open, which removes the TCP
         and TLS handshake from the critical path.  urllib is kept as the
         fallback for the cases the pool cannot serve (a proxy, or a
         transport error the pool ran into), so behaviour never regresses.
+
+        Both transports receive the same ``method``/``data``, so a POST
+        target posts whether or not ``--pool`` is on.  The pool used to be a
+        GET-only client, which is why this parameter grew here.
         """
         if self.settings.reuse_connections:
-            resp = self._http(proxy or "").get(
-                url,
-                headers=self._headers(),
-                follow_redirects=self.settings.follow_redirects,
-            )
+            client = self._http(proxy or "")
+            if data is None:
+                # A GET keeps using get(): the method every client (and every
+                # test double) already implements.
+                resp = client.get(
+                    url,
+                    headers=self._headers(),
+                    follow_redirects=self.settings.follow_redirects,
+                )
+            else:
+                resp = client.request(
+                    method,
+                    url,
+                    headers=self._headers(),
+                    body=data,
+                    follow_redirects=self.settings.follow_redirects,
+                )
             if resp.status != 0:
                 return resp.body[: self.settings.max_body_bytes], resp.status
             # the pooled client failed - fall back to urllib once
@@ -902,13 +972,20 @@ class Indexer:
         else:
             joined = ",".join(payloads)
         url = target.with_payload(joined)
+        method = target.http_method
+        data = target.post_body(joined) if method == "POST" else None
         started = time.perf_counter()
-        req = self._request(url)
+        req = self._request(url, method=method, data=data)
         try:
             # Same transport as submit_one: the pooled client when it is
             # enabled, urllib otherwise.  This used to bypass _fetch, so a
             # batch run silently ignored --pool and the read timeout.
-            body, code = self._fetch(url, req, self._pick_proxy())
+            if data is None:
+                body, code = self._fetch(url, req, self._pick_proxy())
+            else:
+                body, code = self._fetch(
+                    url, req, self._pick_proxy(), method=method, data=data
+                )
             elapsed = int((time.perf_counter() - started) * 1000)
             out = []
             for p in payloads:
@@ -1734,11 +1811,15 @@ def load_modern_targets(path: str | os.PathLike | None = None) -> list[PingTarge
         url = item.get("url")
         if not url:
             continue
+        # ``mode`` decides the request shape, so a stray " POST " in a
+        # hand-edited JSON must not fall through to the GET path unchanged.
+        mode = str(item.get("mode", "append") or "append").strip().lower()
         out.append(
             PingTarget(
                 url=url,
                 kind=item.get("kind", "modern"),
-                mode=item.get("mode", "append"),
+                mode=mode if mode in ("append", "query", "post") else "append",
+                body=str(item.get("body", DEFAULT_POST_BODY)),
             )
         )
     return out
