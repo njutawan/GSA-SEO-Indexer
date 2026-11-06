@@ -40,6 +40,18 @@ binary, or resource is used — only knowledge of how it works.
 
 ## 🚀 Getting Started
 
+### Install
+
+```bash
+pip install gsa-seo-indexer        # from PyPI
+# or, always the tip of main:
+pip install git+https://github.com/njutawan/GSA-SEO-Indexer.git
+```
+
+Releases are cut from a tag (`git tag v1.2.0 && git push origin v1.2.0`): the
+workflow builds sdist + wheel, checks the contents, and uploads with **trusted
+publishing** — no PyPI token is stored in the repository.
+
 ### Prerequisites
 
 - Python 3.10+
@@ -153,7 +165,7 @@ Key flags: `--threads`, `--proxy`, `--report`, `--modern`, `--batch`, `--fast`,
 - 🎛️ **config.ini** — keys mirror the original GSA config; can read GSA's own `config.ini`
 - 🔐 **Separate API keys** — `keys.json`, never written to reports; paid index
   services **always** verify the TLS certificate
-- 🧪 **123 tests + CI** — `python -m unittest discover -s tests`, Python 3.10–3.13
+- 🧪 **176 tests + CI** — `python -m unittest discover -s tests`, Python 3.10–3.13
   matrix plus `ruff check` (dev-only; the runtime stays dependency-free)
 - ⚡ **Parallel index services** — "Run enabled" submits to 8 services at once
   (48 services: 9.4 s → 1.2 s); the CLI has `services --run-enabled`
@@ -161,6 +173,12 @@ Key flags: `--threads`, `--proxy`, `--report`, `--modern`, `--batch`, `--fast`,
   spill to a temporary file, the report stays identical and in the same order
 - 📮 **Real `mode="post"` targets** — the form body is actually sent (a POST target used
   to go out as an empty GET), on both the urllib and the `--pool` path
+- 🗜️ **`--gzip` (opt-in)** — `Accept-Encoding: gzip`, bodies decoded with a size cap;
+  a 120 kB test page drops to 32 kB on the wire
+- 🔁 **`--retries` (opt-in)** — 429/503 retried while honouring `Retry-After`, capped by
+  `--retry-max-wait` (10 s default) so a worker is never parked for a minute
+- 🧵 **`--transport asyncio` (optional)** — one event loop instead of the thread pool; the
+  rules (classification, gzip, POST, retry, dead hosts) are the same as the thread path
 
 ---
 

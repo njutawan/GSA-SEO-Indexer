@@ -186,6 +186,15 @@ python -m gsa_seo_indexer.cli submit -f urls.txt --batch 10
 # lewat proxy
 python -m gsa_seo_indexer.cli submit -f urls.txt --use-proxy --proxy 1.2.3.4:8080
 
+# minta gzip (byte di kabel lebih sedikit; default mati)
+python -m gsa_seo_indexer.cli submit -f urls.txt --gzip
+
+# coba ulang 429/503, hormati Retry-After, tunggu maksimal 10 detik
+python -m gsa_seo_indexer.cli submit -f urls.txt --retries 2 --retry-max-wait 10
+
+# satu event loop menggantikan thread pool (tanpa proxy/batch)
+python -m gsa_seo_indexer.cli submit -f urls.txt --threads 200 --transport asyncio
+
 # uji proxy dulu sebelum run; yang mati dibuang,
 # kalau semua mati run jalan TANPA proxy
 python -m gsa_seo_indexer.cli submit -f urls.txt --proxy-file proxies.txt --test-proxies
@@ -291,6 +300,9 @@ BulkAddUrl      -> {"taskId":925856,"taskCountUrls":999,...}
 | **Pre-flight liveness** | hanya efektif kalau mayoritas host mati | opsional (`--preflight`) |
 | **Batch multi-URL** | **4,5× lebih cepat, tapi backlink hilang** | opsional (`--batch N`) |
 | **Connection pooling** | 2,6× lebih cepat per host | opsional (`--pool`) |
+| **Gzip** | 120 kB → 32 kB di kabel (halaman uji), keputusan identik | opsional (`--gzip`) |
+| **Retry 429/503** | 503 → 200 berakhir `submitted`, bukan `failed` | opsional (`--retries N`) |
+| **Transport asyncio** | setara dengan thread di loopback (0,97–1,19×), tanpa batas jumlah thread | opsional (`--transport asyncio`) |
 
 Benchmark akhir — 150 situs → 314 target, 5 URL, setting sama persis:
 

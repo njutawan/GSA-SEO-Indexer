@@ -35,6 +35,10 @@ memakai TLS sama sekali. Itu plafon throughput yang sebenarnya, bukan latensi se
 | **P5** | `_classify_link` menjalankan satu alternasi besar atas seluruh body untuk memutuskan "listed" | halaman 165 kB: **1,43 → 0,41 ms** (3,5×), 280k kasus ekuivalen | ✅ **tuntas** (§13) |
 | **P6** | `self.results` menahan **semua** baris sampai run selesai | 660k baris ≈ 115 MB; kini puncak datar (400k baris: 101 MB → **17 MB**) | ✅ **tuntas** (§14) |
 | **P7** | Target `mode="post"` tetap dikirim sebagai **GET tanpa body** — `with_payload()` mengembalikan URL dasar dan semua transport menulis `GET` mati | target POST tidak pernah menyampaikan URL sama sekali; hasilnya "submitted" untuk halaman yang tidak menerima apa pun | ✅ **tuntas** (§15) |
+| **P8** | Tidak ada `Accept-Encoding: gzip`; body sampai 200 kB dikirim utuh | halaman uji 120 kB -> **32,5 kB** di kabel (3,7x); keputusan klasifikasi identik, kedua transport | ✅ **tuntas** (§16) |
+| **P9** | 429/503 hanya dicatat `failed`, `Retry-After` diabaikan | 503 lalu 200: **1 -> 2 request, failed -> submitted**; plafon tunggu mencegah worker diparkir 60 s | ✅ **tuntas** (§17) |
+| **P10** | Concurrency hanya bisa dibeli dengan thread (satu stack per request) | `--transport asyncio`: baris & statistik identik; di loopback **setara** dengan thread (0,97-1,19x) | ✅ **tuntas** (§18) |
+| **P11** | Wheel tidak lengkap: `assets/app.ico` tidak ikut terpaket, rilis belum ada | `pip install` kini membawa ikon + 48 INI + 11.661 situs; rilis via tag, trusted publishing | ✅ **tuntas** (§19) |
 
 ---
 
@@ -387,9 +391,11 @@ dikerjakan.
 | 3 | Laporan JSON memakai `indent=1` dan `json.dump` per baris | **100k baris: 1,90 s, 17,7 MB** (CSV: 0,10 s, 5,8 MB) | compact + tulis per blok: **−35% waktu, −14% ukuran** (100k baris) | rendah (format berubah; pembaca JSON tetap kompatibel) | **selesai** (§12.2) |
 | 4 | "Run enabled" ke index service berjalan **sekuensial** di satu thread | 48 service × 200 ms = **9,4 s** | 8 worker paralel: **1,2 s** (7,8×) | rendah–sedang (butuh pembatas + status per service di GUI) | **selesai** (§12.3) |
 | 5 | `self.results` menahan semua baris sampai run selesai | **17,7 MB / 100k baris** (slots) | jendela 20k baris + tumpah ke disk: **400k baris puncak 17 MB** (datar), laporan identik | sedang — **selesai tanpa mengubah API**: `ResultStore` tetap list-like (`append`/`iter`/`len`) | **selesai** (§14) |
-| 6 | Tidak ada `Accept-Encoding: gzip` di jalur urllib | body sampai 200 kB dikirim utuh | ±3–5× lebih sedikit byte pada halaman yang compressible | sedang (perlu A/B pada list asli; sebagian situs rewel soal header) | **belum — butuh A/B jaringan** |
-| 7 | 429/503 hanya dicatat `failed`, `Retry-After` diabaikan | satu baris hilang per kejadian | retry/backoff dalam run menaikkan yield, bukan kecepatan | rendah (perlu plafon percobaan) | **belum — ubah semantik** |
+| 6 | Tidak ada `Accept-Encoding: gzip` di jalur urllib | body sampai 200 kB dikirim utuh | **120 kB -> 32,5 kB** di kabel (3,7x, halaman uji yang sengaja sulit dikompresi) | rendah — opt-in `--gzip`, plus dekode berplafon | **selesai** (§16) |
+| 7 | 429/503 hanya dicatat `failed`, `Retry-After` diabaikan | satu baris hilang per kejadian | **503 → 200 jadi 2 request dan `submitted`**; `Retry-After` dihormati sampai plafon | rendah — opt-in `--retries 0` default, plafon `retry_max_wait` | **selesai** (§17) |
 | 8 | `PingTarget(mode="post")` tidak pernah mengirim body | `submit_one` selalu GET, jadi target POST mengirim **nol** URL | kini form body sungguhan di kedua transport; perilaku GET tidak berubah | rendah (default tetap `append`/`query`, 15 test baru) | **selesai** (§15) |
+| 11 | Concurrency terbatas jumlah thread (satu stack per request) | — (bukan penghambat di loopback) | `--transport asyncio`: ribuan request in-flight tanpa thread | sedang — jalur baru, tanpa proxy/batch | **selesai** (§18) |
+| 12 | Paket tidak siap rilis: `assets/app.ico` tidak ikut wheel, tidak ada workflow publish | `pip install` tanpa ikon tray | wheel lengkap + rilis tag dengan trusted publishing | rendah | **selesai** (§19) |
 | 9 | `Gui._poll()` menguras queue tanpa batas per tick | — (tkinter tidak ada di sandbox) | batasi ±500 baris/tick agar jendela tetap responsif saat burst | rendah | **selesai** (§12.4) |
 | 10 | `UrlWatcher._seen` tumbuh tanpa batas pada watch panjang | — | LRU/batas ukuran | rendah | **selesai** (§12.4) |
 
@@ -436,7 +442,7 @@ workflow rilis dari tag.
 | `gsa_seo_indexer/emulator.py` | `do_GET` mendefinisikan `path` (F821 yang ditemukan ruff) |
 | `.github/workflows/ci.yml`, `pyproject.toml` | CI matrix 3.10–3.13, `ruff check`, dev extra (P3 #5) |
 | `gsa_seo_indexer/engine.py`, `httpclient.py` | **fix P4**: timeout socket di-set ulang ke `read_timeout` setelah connect (urllib dan pooled) — read timeout sebelumnya tertimpa connect timeout |
-| `tools/verify_all.py` | skrip verifikasi ulang 27 pemeriksaan P0–P7, offline, `--only p0..p7` |
+| `tools/verify_all.py` | skrip verifikasi ulang 31 pemeriksaan P0–P11, offline, `--only p0..p11` |
 | `gsa_seo_indexer/engine.py` | `_opener()` di-cache per (proxy, verify) — 200 request = 1 build (P4 #1) |
 | `gsa_seo_indexer/engine.py` | laporan JSON compact, ditulis per 512 baris (`_dump_row`) (P4 #2) |
 | `gsa_seo_indexer/services.py` | `submit_many()`: 8 service paralel, urutan hasil tetap, bisa di-Stop (P4 #3) |
@@ -452,6 +458,18 @@ workflow rilis dari tag.
 | `gsa_seo_indexer/cli.py` | ringkasan memakai `stats.indexable`/`stats.listed`, bukan memindai seluruh `indexer.results` (yang kini bisa ada di disk) (P6) |
 | `gsa_seo_indexer/httpclient.py` | `PooledHttpClient.request(method, url, body=…)`: jalur pool tidak lagi GET-only; `get()` tetap jadi pembungkus tipis, redirect 301/302/303 → GET, 307/308 → metode+body diulang (P7) |
 | `gsa_seo_indexer/engine.py` | `PingTarget.body` (default `url={enc}`), `http_method`, `post_body()`; `_request()`/`_fetch()` menerima `method`/`data`; `submit_one`/`submit_batch` mengirim POST untuk target `post`; `mode` dari JSON dinormalkan (P7) |
+| `gsa_seo_indexer/httpclient.py` | `decode_content()`: gzip/x-gzip/deflate, teks polos berheader gzip, stream terpotong, plafon hasil dekompresi (P8) |
+| `gsa_seo_indexer/engine.py` | `Settings.accept_gzip` + `_read_body()` dipakai urllib dan `check_url`; pool mendekode setelah header (P8) |
+| `gsa_seo_indexer/engine.py` | `Settings.retries` / `retry_max_wait`, `retry_after_seconds()`, `retry_delay()`, `_submit_attempt()` dan loop di `submit_one()`, tidur lewat `Event.wait` (P9) |
+| `gsa_seo_indexer/asyncio_transport.py` | transport event loop: HTTP/1.1 minimal (Content-Length/chunked/EOF), redirect, TLS verify-first + fallback, gzip, POST, retry, semaphore; `run_work()` (P10) |
+| `gsa_seo_indexer/engine.py` | `Settings.transport`, `Indexer._record()` sebagai satu-satunya pemilik statistik, `transport_fallback` (P10) |
+| `tools/check_package.py` | bangun wheel offline lalu periksa data, entry point, METADATA, dan workflow rilis (P11) |
+| `.github/workflows/release.yml` | rilis dari tag: build, `twine check --strict`, cek isi wheel, smoke CLI, upload artifact, publish dengan trusted publishing (P11) |
+| `.github/workflows/ci.yml` | job `package`: wheel dibangun dan CLI diuji dari site-packages (P11) |
+| `tests/test_gzip.py` | 12 test: keputusan identik, kedua transport, server yang berbohong, stream terpotong, plafon, noindex |
+| `tests/test_retry.py` | 18 test: parsing `Retry-After`, plafon, exhausted, kedua transport, Stop saat backoff |
+| `tests/test_asyncio_transport.py` | 14 test: paritas baris/statistik, POST, gzip, redirect, chunked/EOF, host mati, cap koneksi, Stop, HTTPS self-signed |
+| `tests/test_packaging.py` | 9 test: metadata, package-data, versi, workflow rilis, build wheel sungguhan |
 | `tests/test_post_target.py` | 15 test: body form, GET tidak berubah (tanpa body/Content-Type), kedua transport, 303 jadi GET, 307 mengulang body, batch satu body, normalisasi loader |
 | `tests/test_resultstore.py` | 8 test: jendela tanpa disk, tumpahan menjaga urutan, `clear()`/`close()`, pack/unpack, dan integrasi engine (laporan + ringkasan identik) |
 | `tests/test_engine.py` | 57 test: P0/P1/P2/P3 + `ReadTimeoutTest`, `OpenerCacheTest`, `ReportFormatTest` |
@@ -475,7 +493,7 @@ python tools/bench_local.py 400 16
 # benar-benar memisahkan overhead klien: 1 thread
 python tools/bench_local.py 400 1
 
-# verifikasi ulang semua klaim P0-P7 sekaligus (offline, ±34 s)
+# verifikasi ulang semua klaim P0-P11 sekaligus (offline, ±54 s)
 python tools/verify_all.py
 
 # ekuivalensi klasifikasi: implementasi lama vs sekarang, 40k kasus acak
@@ -491,6 +509,13 @@ python -m unittest tests.test_gui_rows -v     # cap tabel GUI (stub tkinter)
 python -m unittest tests.test_cli_timeouts -v # pemetaan opsi timeout
 python -m unittest tests.test_resultstore -v  # tumpahan hasil ke disk
 python -m unittest tests.test_post_target -v  # target POST + redirect
+python -m unittest tests.test_gzip -v         # gzip + decode
+python -m unittest tests.test_retry -v        # retry 429/503
+python -m unittest tests.test_asyncio_transport -v  # transport event loop
+python -m unittest tests.test_packaging -v    # wheel + workflow rilis
+
+# bangun wheel dan periksa isinya (dipakai CI dan verify_all P11)
+python tools/check_package.py
 python -m unittest tests.test_engine.ReadTimeoutTest -v  # connect vs read timeout
 ```
 
@@ -506,7 +531,7 @@ Semua klaim P0–P3 diukur ulang dari nol oleh satu skrip, bukan dari catatan
 tahap sebelumnya:
 
 ```bash
-python tools/verify_all.py            # 27 pemeriksaan P0-P7 (±34 s)
+python tools/verify_all.py            # 31 pemeriksaan P0-P11 (±54 s)
 python tools/verify_all.py --only p2  # satu fase
 ```
 
@@ -647,7 +672,7 @@ biaya klien.
 ```bash
 python -m unittest discover -s tests -v    # 92 test
 python tools/verify_all.py --only p4       # 4 pemeriksaan
-python tools/verify_all.py                 # 27 pemeriksaan semua fase
+python tools/verify_all.py                 # 31 pemeriksaan semua fase
 python tools/bench_local.py 400 1          # +24% vs commit sebelumnya
 ```
 
@@ -943,3 +968,158 @@ python tools/verify_all.py --only p7           # 1 pemeriksaan
   melengkapi jalur yang sudah ada di format data, bukan menambah endpoint baru.
 - Deteksi 401/403/429 dan retry/backoff tetap seperti sebelumnya — itu masih
   item terpisah (§8 #7) dan sengaja tidak diubah di sini.
+
+---
+
+## 16. P8 — gzip: lebih sedikit byte, keputusan yang sama
+
+Halaman hasil dari situs ping/statistik adalah HTML 100–200 kB yang sebagian
+besar berupa template berulang. `--gzip` menambahkan `Accept-Encoding: gzip`,
+lalu mendekode jawabannya sebelum diklasifikasi.
+
+### 16.1 Angka
+
+| Halaman uji | Di kabel |
+|---|---|
+| 120 kB, tanpa `--gzip` | 120 kB |
+| 120 kB, dengan `--gzip` | **32,5 kB** (27%, 3,7x lebih sedikit) |
+
+Halaman uji itu sengaja **sulit** dikompresi (kata dan angka acak); satu
+kalimat yang diulang-ulang memberi 0,5 kB dan itu akan membesar-besarkan
+hasilnya. Halaman ping sungguhan ada di antara keduanya, jadi 3,7x adalah
+batas bawah.
+
+Yang penting bukan angkanya, tapi ini: keputusan `indexed`/`listed` tetap
+identik, di kedua transport, dan `check_url` tetap menemukan `noindex` di
+dalam body yang terkompresi.
+
+### 16.2 Yang harus hati-hati
+
+Tiga hal yang membuat fitur ini gampang salah:
+
+1. **Body dipotong di `max_body_bytes`** — stream gzip yang terpotong bukan
+   error, dan `decode_content()` mengembalikan apa yang bisa didekode.
+2. **Server bisa berbohong**: mengaku `gzip` tapi mengirim teks polos. Kalau
+   `zlib` gagal, byte aslinya dipakai.
+3. **Zip bomb**: hasil dekompresi dibatasi `max_body_bytes`, jadi 1 MB nol yang
+   dikompres jadi 1 kB tidak menjadi 1 MB di RAM.
+
+Karena sebagian situs ping menjawab 406 untuk encoding yang tidak mereka
+harapkan, dan A/B di jaringan nyata belum dijalankan, `accept_gzip` **default
+off** (`--gzip`, config.ini `accept gzip 1`).
+
+---
+
+## 17. P9 — retry 429/503, dengan plafon
+
+`429` dan `503` berarti "nanti", bukan "tidak". Dulu keduanya langsung
+`failed`, jadi baris yang kena rate limit hilang dari laporan.
+
+| Skenario | Tanpa `--retries` | `--retries 1` |
+|---|---|---|
+| 503 lalu 200 | 1 request, `failed` | **2 request, `submitted`** |
+| 503 terus | 1 request, `failed` | 2 request, `failed (retry habis)` |
+| `Retry-After: 60`, plafon 1 s | 1 request, `failed` | **1 request, 0,00 s, `failed`** |
+
+Kebijakannya:
+
+- `Retry-After` dipakai apa adanya (delta-detik **atau** HTTP-date; tanggal
+  lampau menjadi 0).
+- Tanpa header: backoff 0,5 s berlipat dengan jitter sampai 25%, supaya daftar
+  yang menghantam host yang sama tidak mencoba ulang serempak.
+- Tunggu yang lebih lama dari `retry_max_wait` (default 10 s) **ditolak**:
+  hasilnya `failed`, bukan worker yang diparkir satu menit. Ini bagian yang
+  paling mudah dilupakan saat menambahkan retry.
+- Tidur memakai `Event.wait()`, jadi **Stop** memutus backoff dalam hitungan
+  milidetik dan barisnya dicatat `skipped - stopped during retry`.
+- Default `retries = 0` = perilaku lama, satu percobaan.
+
+Retry hanya berlaku di jalur `submit_one`; jalur batch sengaja dibiarkan (batch
+sudah opt-in dan memakai satu request untuk banyak URL).
+
+---
+
+## 18. P10 — transport asyncio: setara, bukan ajaib
+
+`--transport asyncio` menjalankan pekerjaan yang sama di satu event loop dengan
+semaphore sebesar `threads`. Yang **dipakai ulang**, bukan ditulis ulang:
+`PingTarget.with_payload`/`post_body`, `_classify_link`, `HostCache`,
+`decode_content()` (gzip), dan kebijakan retry. `Indexer._record()` menjadi
+satu-satunya pemilik statistik, jadi kedua transport melaporkan angka yang sama.
+
+### 18.1 Hasil pengukuran (loopback)
+
+| Beban | threads | asyncio | Rasio |
+|---|---|---|---|
+| 600 request @ 50 concurrency | 803–960 req/s | 782–1108 req/s | 0,97–1,19x |
+| 2.000 request @ 100, server delay 10 ms | 831 req/s | **993 req/s** | 1,19x |
+| 2.000 request @ 500, server delay 10 ms | 887 req/s | **1.022 req/s** | 1,15x |
+| Puncak RSS, 200 concurrency | 29 MB | 30 MB | sama |
+
+**Kesimpulannya jujur: di mesin ini asyncio setara, bukan lebih cepat.**
+Keunggulan yang tidak terlihat di tabel: thread memakan ~8 MB *virtual address
+space* per unit dan jumlahnya dibatasi OS, sedangkan event loop tidak — itu
+alasan arsitektural untuk memakainya pada run yang sangat lebar (10.000+
+target), bukan alasan performa yang terbukti di loopback.
+
+### 18.2 Jebakan yang sempat menipu
+
+Pengukuran pertama menunjukkan asyncio "2x lebih cepat" (390 vs 182 req/s).
+Itu **artefak fixture**: `socketserver` memakai backlog listen default 5, jadi
+50 koneksi bersamaan sebagian ditolak dan jalur thread yang lebih lambat
+kebetulan punya pola yang berbeda. Setelah `request_queue_size` dinaikkan,
+angkanya menjadi 1,0–1,2x. Pelajarannya: ukur dulu servernya, baru kliennya.
+
+### 18.3 Yang belum ada di jalur ini
+
+- **Proxy**: hanya jalur thread. Kalau `use_proxy` aktif, run memakai thread dan
+  mencatat alasannya di `Indexer.transport_fallback`.
+- **Batch** (`--batch N`) juga tetap di jalur thread.
+- **Connection pooling**: transport asyncio selalu `Connection: close`.
+- **HTTPS** hanya diuji dengan sertifikat self-signed lokal (verify-first, lalu
+  fallback tanpa verifikasi) — cukup untuk membuktikan SNI dan fallback-nya
+  bekerja, bukan pengganti uji ke situs nyata.
+
+---
+
+## 19. P11 — paket PyPI
+
+### 19.1 Bug yang ditemukan
+
+Wheel 1.2.0 yang dibangun dari repo **tidak berisi `assets/app.ico`**, karena
+`[tool.setuptools.package-data]` hanya menyebut `data/*` dan `index_service/*`.
+`pip install` karena itu menghasilkan program tanpa ikon tray/GUI — tanpa pesan
+error apa pun. Ini jenis bug yang baru terlihat setelah rilis.
+
+### 19.2 Yang ditambahkan
+
+| Berkas | Isi |
+|---|---|
+| `pyproject.toml` | `assets/*` di package-data, `[project.urls]`, extra `release` (build+twine) |
+| `tools/check_package.py` | bangun wheel offline, lalu periksa: 5 berkas runtime wajib, 48 INI, `entry_points.txt` (`gsa-seo-indexer`), METADATA (Name/Version/Requires-Python), jumlah modul, dan workflow rilis (OIDC, tanpa token tersimpan) |
+| `.github/workflows/release.yml` | tag `v*` -> build sdist+wheel -> `twine check --strict` -> cek isi wheel -> install wheel di venv + smoke CLI -> upload artifact -> publish |
+| `.github/workflows/ci.yml` | job `package`: membangun wheel dan menjalankan CLI dari site-packages pada setiap push |
+| `tests/test_packaging.py` | 9 test, termasuk satu build wheel sungguhan |
+
+Publikasi memakai **trusted publishing** (`id-token: write`, environment
+`pypi`): tidak ada API token PyPI di repo maupun di secrets. Ada
+`workflow_dispatch` dengan `dry_run` untuk membangun tanpa mengunggah.
+
+### 19.3 Bukti lokal
+
+```bash
+python tools/check_package.py     # wheel=…1.2.0…, services=48, modules=16, data lengkap
+python -m venv /tmp/venv && /tmp/venv/bin/pip install dist/*.whl
+/tmp/venv/bin/gsa-seo-indexer sites --count      # 11661
+/tmp/venv/bin/gsa-seo-indexer services --list    # 48 service dari site-packages
+```
+
+### 19.4 Yang belum dilakukan
+
+- **Belum ada unggahan sungguhan ke PyPI**: sandbox ini tidak punya kredensial,
+  dan trusted publishing harus didaftarkan dulu di halaman PyPI
+  (project -> Publishing -> tambahkan repo + `release.yml` + environment `pypi`).
+  Yang dikerjakan di sini adalah jalur rilis yang siap dipakai.
+- Versi masih `1.2.0`; menaikkan versi tetap langkah manual (pyproject +
+  `engine.APP_VERSION`, dijaga test agar tetap sama).
+- Belum ada percobaan ke TestPyPI.

@@ -79,7 +79,11 @@ sehingga target muncul sebagai backlink di domain ber-otoritas tinggi.
 
 ### Instalasi via pip
 
-Langsung dari GitHub — tanpa download atau clone manual:
+```bash
+pip install gsa-seo-indexer
+```
+
+Atau langsung dari GitHub (selalu versi terbaru `main`):
 
 ```bash
 pip install git+https://github.com/njutawan/GSA-SEO-Indexer.git
@@ -90,10 +94,12 @@ Setelah terpasang, jalankan sebagai command global:
 ```bash
 gsa-seo-indexer --version
 gsa-seo-indexer submit --url https://example.com/
-
-# Setelah dipublikasikan ke PyPI, cukup:
-# pip install gsa-seo-indexer
 ```
+
+Rilis ke PyPI berjalan lewat tag (`git tag v1.2.0 && git push origin v1.2.0`):
+workflow membangun sdist + wheel, memeriksa isinya (`tools/check_package.py`),
+lalu mengunggah dengan **trusted publishing** — tidak ada token PyPI yang
+disimpan di repo.
 
 > 📦 Tetap **zero dependency** — murni standard library, tidak perlu `pip install` tambahan.
 > 💾 State (`config.ini`, `keys.json`, `host_cache.json`, `reports/`) disimpan di folder user
@@ -217,7 +223,7 @@ Flag penting: `--threads`, `--proxy`, `--proxy-file`, `--test-proxies`, `--repor
 - 🎛️ **config.ini** — key meniru config asli GSA, bisa baca `config.ini` GSA langsung
 - 🔐 **API key terpisah** — `keys.json`, tidak pernah ditulis ke laporan; index service
   berbayar **selalu** memverifikasi sertifikat TLS
-- 🧪 **123 test + CI** — `python -m unittest discover -s tests`, matrix Python 3.10–3.13
+- 🧪 **176 test + CI** — `python -m unittest discover -s tests`, matrix Python 3.10–3.13
   dan `ruff check` (dev-only; runtime tetap zero-dependency)
 - ⚡ **Index service paralel** — "Run enabled" mengirim ke 8 service sekaligus
   (48 service: 9,4 s → 1,2 s); CLI punya `services --run-enabled`
@@ -225,6 +231,12 @@ Flag penting: `--threads`, `--proxy`, `--proxy-file`, `--test-proxies`, `--repor
   tumpah ke file sementara, laporan tetap identik dan urutannya sama
 - 📮 **Target `mode="post"` sungguhan** — body form benar-benar dikirim (dulu target POST
   diam-diam jadi GET kosong), di jalur urllib maupun `--pool`
+- 🗜️ **`--gzip` (opt-in)** — header `Accept-Encoding: gzip`, body didekompresi dengan
+  batas ukuran; halaman uji 120 kB turun ke 32 kB di kabel
+- 🔁 **`--retries` (opt-in)** — 429/503 dicoba ulang dengan menghormati `Retry-After`,
+  berplafon (`--retry-max-wait`, default 10 s) supaya worker tidak diparkir
+- 🧵 **`--transport asyncio` (opsional)** — satu event loop menggantikan thread pool;
+  aturan (klasifikasi, gzip, POST, retry, host mati) sama persis dengan jalur thread
 
 ---
 
