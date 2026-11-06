@@ -39,6 +39,10 @@ QUEUE_PATH = HERE / "last_queue.txt"
 # cost hundreds of MB, while nobody scrolls past the first few thousand.
 # Every result is still kept by the engine and written to the report.
 MAX_TREE_ROWS = 5_000
+# Rows handled per UI tick.  Draining the whole queue in one tick meant a
+# burst of results could keep the loop busy for seconds while the window went
+# unpainted (the tree stops at MAX_TREE_ROWS, but the queue keeps growing).
+MAX_DRAIN_PER_TICK = 400
 
 # Light/dark palettes.  Tag colors differ per theme so the Link column
 # stays readable on both.
@@ -1350,8 +1354,12 @@ class IndexerApp(tk.Tk):
         counter, and the widgets are updated once at the end.
         """
         inserted = 0
+        capped = False
         try:
             while True:
+                if inserted >= MAX_DRAIN_PER_TICK:
+                    capped = True
+                    break
                 kind, *payload = self._events.get_nowait()
                 if kind == "result":
                     res: engine.Result = payload[0]
@@ -1451,7 +1459,9 @@ class IndexerApp(tk.Tk):
             self.var_backlinks.set(f"Backlinks: {self._backlinks}")
             self._update_shown_label()
 
-        self.after(150, self._poll)
+        # A capped tick leaves work queued: come back immediately instead of
+        # waiting the full interval.
+        self.after(1 if capped else 150, self._poll)
 
     def _import_file(self) -> None:
         self._open_queue()
@@ -1649,16 +1659,15 @@ class IndexerApp(tk.Tk):
                 return
 
             def work() -> None:
-                ok_count = 0
-                for svc in which:
-                    if self.indexer.stopped:
-                        break
-                    try:
-                        ok, msg = svc.submit(urls, service_mod.service_arguments_with_keys(svc, keys))
-                    except Exception as exc:  # noqa: BLE001
-                        ok, msg = False, str(exc)[:160]
-                    if ok:
-                        ok_count += 1
+                # One request per service, eight at a time: the services are
+                # independent endpoints, so the old sequential loop only paid
+                # the sum of every round trip (9.4 s for 48 x 200 ms -> 1.2 s).
+                args_map = {
+                    svc.name: service_mod.service_arguments_with_keys(svc, keys)
+                    for svc in which
+                }
+
+                def report(svc, ok: bool, msg: str) -> None:
                     res = engine.Result(
                         target=urls[0],
                         url=svc.url or svc.name,
@@ -1670,6 +1679,15 @@ class IndexerApp(tk.Tk):
                     with self.indexer._lock:
                         self.indexer.results.append(res)
                     self._events.put(("result", res))
+
+                done = service_mod.submit_many(
+                    which,
+                    urls,
+                    args=args_map,
+                    should_stop=lambda: self.indexer.stopped,
+                    on_result=report,
+                )
+                ok_count = sum(1 for _svc, ok, _msg in done if ok)
                 self._events.put(("svc_done", (len(which), ok_count)))
 
             self._svc_run = True

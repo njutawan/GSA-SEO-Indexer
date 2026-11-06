@@ -153,8 +153,10 @@ Key flags: `--threads`, `--proxy`, `--report`, `--modern`, `--batch`, `--fast`,
 - 🎛️ **config.ini** — keys mirror the original GSA config; can read GSA's own `config.ini`
 - 🔐 **Separate API keys** — `keys.json`, never written to reports; paid index
   services **always** verify the TLS certificate
-- 🧪 **71 tests + CI** — `python -m unittest discover -s tests`, Python 3.10–3.13
+- 🧪 **92 tests + CI** — `python -m unittest discover -s tests`, Python 3.10–3.13
   matrix plus `ruff check` (dev-only; the runtime stays dependency-free)
+- ⚡ **Parallel index services** — "Run enabled" submits to 8 services at once
+  (48 services: 9.4 s → 1.2 s); the CLI has `services --run-enabled`
 
 ---
 

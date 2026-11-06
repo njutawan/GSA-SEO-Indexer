@@ -25,6 +25,7 @@ from gsa_seo_indexer import engine, httpclient  # noqa: E402
 from gsa_seo_indexer.engine import (  # noqa: E402
     Indexer,
     PingTarget,
+    Result,
     Settings,
     _classify_link,
     cap_targets,
@@ -511,6 +512,98 @@ class ReportTest(unittest.TestCase):
         self.assertEqual(
             engine.asdict(result)["target"], "http://a/"
         )
+
+
+class ReportFormatTest(unittest.TestCase):
+    def test_json_is_compact_and_matches_asdict(self) -> None:
+        from dataclasses import asdict
+
+        indexer = Indexer(Settings(persist_host_cache=False, dns_cache=False))
+        indexer.results = [
+            Result(target=f"http://example.com/{i}", url="http://t.example/", status="submitted", code=200)
+            for i in range(3)
+        ]
+        indexer.settings.report_format = "json"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report.json"
+            indexer.write_report(path)
+            text = path.read_text(encoding="utf-8")
+        indexer.close()
+
+        self.assertEqual(
+            json.loads(text), [asdict(r) for r in indexer.results]
+        )
+        self.assertNotIn('": ', text, "laporan harus compact, bukan indent=1")
+        self.assertTrue(text.startswith("[") and text.endswith("]\n"))
+
+
+class OpenerCacheTest(unittest.TestCase):
+    """An opener is stateless, so building it once per policy is enough."""
+
+    def _indexer(self, **kwargs) -> Indexer:
+        base = dict(persist_host_cache=False, dns_cache=False, connect_timeout=2.0)
+        base.update(kwargs)
+        return Indexer(Settings(**base))
+
+    def test_the_same_policy_returns_the_same_opener(self) -> None:
+        indexer = self._indexer()
+        first = indexer._opener(None)
+        self.assertIs(first, indexer._opener(None))
+        self.assertIs(indexer._opener(None, verify=False), indexer._opener(None, verify=False))
+        self.assertIsNot(first, indexer._opener(None, verify=False))
+        indexer.close()
+
+    def test_a_proxy_gets_its_own_opener(self) -> None:
+        indexer = self._indexer()
+        direct = indexer._opener(None)
+        proxied = indexer._opener("http://proxy.example:8080")
+        self.assertIsNot(direct, proxied)
+        self.assertIs(proxied, indexer._opener("http://proxy.example:8080"))
+        indexer.close()
+
+    def test_the_cache_is_bounded(self) -> None:
+        indexer = self._indexer()
+        for index in range(engine.MAX_CACHED_OPENERS * 2):
+            indexer._opener(f"http://proxy{index}.example:8080")
+        self.assertLessEqual(len(indexer._openers), engine.MAX_CACHED_OPENERS)
+        indexer.close()
+
+    def test_opener_is_built_once_under_concurrency(self) -> None:
+        indexer = self._indexer()
+        built = [0]
+        real = indexer._build_opener
+
+        def counting(proxy, verify=True):
+            built[0] += 1
+            time.sleep(0.01)
+            return real(proxy, verify)
+
+        indexer._build_opener = counting
+        seen: list = []
+
+        def grab() -> None:
+            seen.append(indexer._opener(None))
+
+        threads = [threading.Thread(target=grab) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertTrue(all(item is seen[0] for item in seen), "harus satu opener")
+        self.assertEqual(built[0], 1, "hanya satu pembangunan opener")
+        indexer.close()
+
+    def test_new_settings_drop_the_cache(self) -> None:
+        indexer = self._indexer(read_timeout=5.0)
+        before = indexer._opener(None)
+        indexer.apply_settings(Settings(read_timeout=9.0, persist_host_cache=False))
+        after = indexer._opener(None)
+        self.assertIsNot(before, after)
+        timeout_handlers = [
+            h for h in after.handlers if isinstance(h, engine._ConnectTimeoutHTTPHandler)
+        ]
+        self.assertEqual(timeout_handlers[0]._connect_timeout, Settings().connect_timeout)
+        indexer.close()
 
 
 class BoundedWorkWindowTest(unittest.TestCase):

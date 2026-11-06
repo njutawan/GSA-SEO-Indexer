@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import time
+from collections import deque
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -18,11 +19,21 @@ from .engine import Indexer, PingTarget
 class UrlWatcher:
     """Track files and report URLs that are new since the last poll."""
 
-    def __init__(self, paths: Sequence[str | os.PathLike], poll_interval: float = 5.0) -> None:
+    def __init__(
+        self,
+        paths: Sequence[str | os.PathLike],
+        poll_interval: float = 5.0,
+        max_seen: int = 50_000,
+    ) -> None:
         self.paths = [Path(p) for p in paths]
         self.poll_interval = poll_interval
         self._offsets: dict[Path, int] = {}
+        # A watch that runs for days sees every URL ever written; the set is
+        # therefore bounded, oldest first.  A URL evicted here can only come
+        # back if the log repeats it, which append-only logs do not do.
+        self.max_seen = max(1_000, max_seen)
         self._seen: set[str] = set()
+        self._seen_order: deque[str] = deque()
 
     def _expanded(self) -> list[Path]:
         out: list[Path] = []
@@ -63,7 +74,11 @@ class UrlWatcher:
                 if line in self._seen:
                     continue
                 self._seen.add(line)
+                self._seen_order.append(line)
                 found.append(line)
+        if len(self._seen) > self.max_seen:
+            while len(self._seen) > self.max_seen and self._seen_order:
+                self._seen.discard(self._seen_order.popleft())
         return found
 
     def watch(

@@ -55,7 +55,9 @@ from gsa_seo_indexer.engine import (  # noqa: E402
     check_urls,
 )
 from gsa_seo_indexer.httpclient import tls_context  # noqa: E402
+from gsa_seo_indexer import engine as engine_mod  # noqa: E402
 from gsa_seo_indexer.perf import DnsCache, HostCache  # noqa: E402
+from gsa_seo_indexer.watcher import UrlWatcher  # noqa: E402
 
 HEADER_KEYS = ("user-agent", "accept", "accept-language", "referer")
 
@@ -621,6 +623,111 @@ def p3_toolchain() -> tuple[str, bool]:
     )
 
 
+# ---------------------------------------------------------------------------
+# P4 — opener cache, compact reports, parallel services, bounded UI state
+# ---------------------------------------------------------------------------
+def p4_opener_cache() -> tuple[str, bool]:
+    with serve() as (_srv, base):
+        ix = _harness(threads=4)
+        built = [0]
+        real = ix._build_opener
+
+        def counting(proxy, verify=True):
+            built[0] += 1
+            return real(proxy, verify)
+
+        ix._build_opener = counting
+        target = PingTarget(url=f"{base}/?url={{enc}}", mode="query")
+        for index in range(200):
+            ix.submit_one(target, f"http://example.com/{index}")
+        first = ix._opener(None)
+        same = first is ix._opener(None)
+        built_by_requests = built[0]  # before the eviction exercise below
+        for index in range(engine_mod.MAX_CACHED_OPENERS * 3):
+            ix._opener(f"http://proxy{index}.example:8080")
+        bounded = len(ix._openers) <= engine_mod.MAX_CACHED_OPENERS
+        ix.close()
+    ok = built_by_requests == 1 and same and bounded
+    return (
+        f"200 request -> {built_by_requests} kali build (dulu 200); identitas sama={same}; "
+        f"cache maks {engine_mod.MAX_CACHED_OPENERS} entri, terpakai {bounded}",
+        ok,
+    )
+
+
+def p4_report_json() -> tuple[str, bool]:
+    ix = _harness()
+    rows = [
+        Result(target=f"http://example.com/{i}", url="http://t.example/?u=x", status="submitted")
+        for i in range(20_000)
+    ]
+    ix.results = rows
+    ix.settings.report_format = "json"
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "report.json"
+        start = time.perf_counter()
+        ix.write_report(path)
+        elapsed = time.perf_counter() - start
+        text = path.read_text(encoding="utf-8")
+    ix.close()
+    compact = len(text) / 1e6
+    pretty = len(json.dumps([asdict(r) for r in rows], indent=1)) / 1e6
+    ok = '": ' not in text and json.loads(text) and compact < pretty
+    return (
+        f"20k baris: {elapsed:.2f} s, {compact:.2f} MB compact vs {pretty:.2f} MB indent=1 "
+        f"({100 - compact / pretty * 100:.0f}% lebih kecil)",
+        ok,
+    )
+
+
+def p4_services_parallel() -> tuple[str, bool]:
+    from gsa_seo_indexer import services as service_mod
+
+    class Fake:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def submit(self, urls, args=None, timeout=20.0):
+            time.sleep(0.1)
+            return True, "HTTP 200"
+
+    batch = [Fake(f"s{i}") for i in range(8)]
+    start = time.perf_counter()
+    results = service_mod.submit_many(batch, ["http://example.com/"], workers=8)
+    parallel = time.perf_counter() - start
+    start = time.perf_counter()
+    service_mod.submit_many(batch, ["http://example.com/"], workers=1)
+    sequential = time.perf_counter() - start
+    ok = len(results) == 8 and parallel < 0.45 and sequential > parallel * 2
+    return (
+        f"8 service x 100 ms: sekuensial {sequential:.2f} s -> paralel {parallel:.2f} s "
+        f"({sequential / parallel:.1f}x), urutan tetap",
+        ok,
+    )
+
+
+def p4_ui_bounds() -> tuple[str, bool]:
+    gui_src = (ROOT / "gsa_seo_indexer" / "gui.py").read_text(encoding="utf-8")
+    drain = re.search(r"^MAX_DRAIN_PER_TICK\s*=\s*([\d_]+)", gui_src, re.M)
+    watcher_src = (ROOT / "gsa_seo_indexer" / "watcher.py").read_text(encoding="utf-8")
+    bounded = "max_seen" in watcher_src and "_seen_order" in watcher_src
+
+    with tempfile.TemporaryDirectory() as tmp:
+        log = Path(tmp) / "links.txt"
+        watch = UrlWatcher([log], max_seen=1_000)
+        for index in range(1_100):
+            with log.open("a", encoding="utf-8") as fh:
+                fh.write(f"http://h{index}.example/\n")
+            watch.poll()
+        size = len(watch._seen)
+    ok = bool(drain) and int(drain.group(1).replace("_", "")) <= 1_000 and bounded and size <= 1_000
+    return (
+        f"drain/tick maks {drain.group(1) if drain else '?'} baris; "
+        f"_seen watcher dibatasi 1000 -> {size} entri setelah 1100 URL",
+        ok,
+    )
+
+
 CHECKS = [
     ("p0", "TLS context dibagi per proses", p0_shared_tls),
     ("p0", "Throughput 16 thread", p0_throughput_16),
@@ -642,12 +749,18 @@ CHECKS = [
     ("p3", "TLS index service", p3_service_tls),
     ("p3", "Halaman root emulator", p3_emulator_root),
     ("p3", "ruff + test + CI", p3_toolchain),
+    ("p4", "Cache opener per kebijakan", p4_opener_cache),
+    ("p4", "Laporan JSON compact", p4_report_json),
+    ("p4", "Index service paralel", p4_services_parallel),
+    ("p4", "Batas UI + watcher", p4_ui_bounds),
 ]
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P3.")
-    parser.add_argument("--only", choices=["p0", "p1", "p2", "p3"], help="satu fase saja")
+    parser.add_argument(
+        "--only", choices=["p0", "p1", "p2", "p3", "p4"], help="satu fase saja"
+    )
     args = parser.parse_args(argv)
 
     os.chdir(ROOT)

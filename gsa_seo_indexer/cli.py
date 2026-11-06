@@ -208,6 +208,17 @@ def build_parser() -> argparse.ArgumentParser:
     sv = sub.add_parser("services", help="paid third-party indexing services")
     sv.add_argument("--list", action="store_true", help="list the service definitions")
     sv.add_argument("--test", metavar="NAME", help="submit to one service with --url")
+    sv.add_argument(
+        "--run-enabled",
+        action="store_true",
+        help="submit --url to every enabled service (parallel)",
+    )
+    sv.add_argument(
+        "--workers",
+        type=int,
+        default=service_mod.DEFAULT_SERVICE_WORKERS,
+        help=f"services submitted at once with --run-enabled (default: {service_mod.DEFAULT_SERVICE_WORKERS})",
+    )
     sv.add_argument("--url", action="append", default=[], help="target URL(s) for --test")
     sv.add_argument("--folder", default=str(SERVICE_DIR), help="folder holding the service INI files")
     sv.add_argument(
@@ -604,6 +615,29 @@ def cmd_services(args) -> int:
         ok, msg = svc.submit(urls, service_mod.service_arguments_with_keys(svc, keys))
         print(f"{svc.name}: {'OK' if ok else 'FAILED'} - {msg}")
         return 0 if ok else 1
+    if args.run_enabled:
+        urls = collect_urls(args)
+        if not urls:
+            print("No URLs given.", file=sys.stderr)
+            return 2
+        enabled = [s for s in svcs if s.enabled]
+        if not enabled:
+            print("No enabled services (edit the INI files or use the GUI).", file=sys.stderr)
+            return 2
+        args_map = {
+            svc.name: service_mod.service_arguments_with_keys(svc, keys) for svc in enabled
+        }
+        print(f"Submitting {len(urls)} URL(s) to {len(enabled)} service(s) "
+              f"({max(1, min(args.workers, len(enabled)))} at a time) ...", flush=True)
+        results = service_mod.submit_many(
+            enabled, urls, args=args_map, workers=args.workers
+        )
+        for svc, ok, msg in results:
+            print(f"  [{('ok  ' if ok else 'FAIL')}] {svc.name}: {msg}")
+        ok_count = sum(1 for _svc, ok, _msg in results if ok)
+        print(f"{ok_count}/{len(results)} service(s) accepted the submission")
+        return 0 if ok_count == len(results) else 1
+
     print(f"{len(svcs)} service definition(s) in {folder}\n")
     for s in svcs:
         flag = "on " if s.enabled else "off"

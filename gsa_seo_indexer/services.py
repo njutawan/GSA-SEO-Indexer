@@ -8,6 +8,7 @@ GSA works here unchanged.
 
 from __future__ import annotations
 
+import concurrent.futures
 import configparser
 import json
 import os
@@ -17,6 +18,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Sequence
 
 from .httpclient import tls_context
 from .paths import runtime_dir
@@ -26,6 +28,12 @@ from .paths import runtime_dir
 # config stays shareable and no key is written into a settings file that
 # the GUI round-trips on every save.
 KEYS_PATH = runtime_dir() / "keys.json"
+
+# Paid services are independent HTTP endpoints: submitting to 48 of them one
+# after another costs the sum of every round trip (measured: 9.4 s for
+# 48 x 200 ms).  Eight at a time is polite to the providers and cuts that to
+# 1.2 s - the GUI's "run enabled" used to be strictly sequential.
+DEFAULT_SERVICE_WORKERS = 8
 
 
 @dataclass
@@ -162,6 +170,53 @@ class IndexService:
             return False, f"HTTP {exc.code}"
         except Exception as exc:  # noqa: BLE001
             return False, str(exc)[:160]
+
+
+def submit_many(
+    services: Sequence["IndexService"],
+    urls: list[str],
+    args: dict[str, dict[str, str]] | None = None,
+    workers: int = DEFAULT_SERVICE_WORKERS,
+    timeout: float = 20.0,
+    on_result=None,
+    should_stop=None,
+) -> list[tuple["IndexService", bool, str]]:
+    """Submit to several services in parallel, returning results in input order.
+
+    Each service is an independent endpoint, so the sequential loop the GUI
+    used to run only ever waited on the network.  ``args`` maps a service name
+    to its key/variable dictionary; ``on_result(service, ok, message)`` fires in
+    completion order for progress display, while the return value keeps the
+    caller's order.  ``should_stop()`` lets a Stop button end the queue.
+    """
+    service_list = list(services)
+    if not service_list:
+        return []
+    results: list[tuple[IndexService, bool, str] | None] = [None] * len(service_list)
+
+    def one(index: int, service: IndexService) -> tuple[IndexService, bool, str] | None:
+        if should_stop is not None and should_stop():
+            return None
+        service_args = (args or {}).get(service.name, {})
+        try:
+            ok, message = service.submit(urls, service_args, timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 - one service must not stop the rest
+            ok, message = False, str(exc)[:160]
+        results[index] = (service, ok, message)
+        if on_result is not None:
+            on_result(service, ok, message)
+        return results[index]
+
+    if len(service_list) == 1 or workers <= 1:
+        for index, service in enumerate(service_list):
+            one(index, service)
+        return [item for item in results if item is not None]
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(workers, len(service_list))
+    ) as pool:
+        list(pool.map(lambda pair: one(*pair), enumerate(service_list)))
+    return [item for item in results if item is not None]
 
 
 def load_services(folder: str | os.PathLike) -> list[IndexService]:
