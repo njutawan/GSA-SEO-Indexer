@@ -23,6 +23,7 @@ import argparse
 import http.server
 import json
 import os
+import random
 import re
 import shutil
 import socket
@@ -728,6 +729,46 @@ def p4_ui_bounds() -> tuple[str, bool]:
     )
 
 
+# ---------------------------------------------------------------------------
+# P5 — the listing decision, made cheaper without changing an answer
+# ---------------------------------------------------------------------------
+def p5_classifier() -> tuple[str, bool]:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "classify_diff", ROOT / "tools" / "classify_diff.py"
+    )
+    diff = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(diff)
+
+    rng = random.Random(7)
+    cases = list(diff.TRICKY) + [diff.generate(rng) for _ in range(2000)]
+    mismatches = 0
+    for body, payload in cases:
+        if diff.reference_classify(body, payload) != _classify_link(body, payload):
+            mismatches += 1
+
+    page = ("<div class='hit'>block text " * 6000) + "<p>http://example.com/blog/post</p>"
+    payload = "http://example.com/blog/post"
+    rounds = 50
+    started = time.perf_counter()
+    for _ in range(rounds):
+        diff.reference_classify(page, payload)
+    slow = (time.perf_counter() - started) / rounds * 1000
+    started = time.perf_counter()
+    for _ in range(rounds):
+        _classify_link(page, payload)
+    fast = (time.perf_counter() - started) / rounds * 1000
+
+    ok = mismatches == 0 and fast < slow * 0.75
+    return (
+        f"{len(cases)} kasus ekuivalen (selisih {mismatches}); "
+        f"halaman {len(page) / 1024:.0f} kB: {slow:.2f} -> {fast:.2f} ms "
+        f"({slow / fast:.1f}x)",
+        ok,
+    )
+
+
 CHECKS = [
     ("p0", "TLS context dibagi per proses", p0_shared_tls),
     ("p0", "Throughput 16 thread", p0_throughput_16),
@@ -753,13 +794,16 @@ CHECKS = [
     ("p4", "Laporan JSON compact", p4_report_json),
     ("p4", "Index service paralel", p4_services_parallel),
     ("p4", "Batas UI + watcher", p4_ui_bounds),
+    ("p5", "Klasifikasi tetap setara", p5_classifier),
 ]
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P3.")
     parser.add_argument(
-        "--only", choices=["p0", "p1", "p2", "p3", "p4"], help="satu fase saja"
+        "--only",
+        choices=["p0", "p1", "p2", "p3", "p4", "p5"],
+        help="satu fase saja",
     )
     args = parser.parse_args(argv)
 

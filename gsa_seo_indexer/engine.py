@@ -1501,6 +1501,62 @@ def check_urls(
     return [item for item in results if item is not None]
 
 
+# The echo pattern as two separate regexes.  ``_QUERY_ECHO_RE`` above is the
+# original single alternation and stays as the reference/fallback; measured on
+# a 165 kB result page, one ``sub`` with the alternation costs 0.86 ms while
+# the two halves separately cost 0.06 ms + 0.13 ms - the alternation defeats
+# the engine's literal-prefix scan.  ``tools/classify_diff.py`` proves the pair
+# agrees with the single regex on the whole fuzz corpus.
+_QUERY_RUN_RE = re.compile(r"\?[^\"'<>\s]*")
+_QUOTED_URL_RE = re.compile(r"=\s*[\"']https?://[^\"']*[\"']")
+
+
+def _needle_in_gap(text: str, needles: Sequence[str], start: int, end: int) -> bool:
+    """Is a whole needle inside ``text[start:end]``?"""
+    for needle in needles:
+        if needle and text.find(needle, start, end) != -1:
+            return True
+    return False
+
+
+def _listed_mention(lowered: str, raw: str, needles: Sequence[str]) -> bool:
+    """Does a needle appear outside every echo match?  Exact, not a heuristic.
+
+    ``_QUERY_ECHO_RE.sub()`` removes the echoes and then the caller searches
+    the remainder.  Searching the *gaps between the matches* answers the same
+    question without building the stripped copy - provided the matches are the
+    ones the single pass would have found:
+
+    * query runs (the first alternative) are removed wherever they occur;
+    * a ``="https://…"`` value (the second alternative) is removed only when
+      its ``=`` was not already eaten by a query run, which is exactly the
+      "start lies inside a run" test below.
+
+    The two alternatives cannot overlap in a harmful way: a run stops at the
+    quote where the value starts.
+    """
+    runs = [match.span() for match in _QUERY_RUN_RE.finditer(raw)]
+    spans = list(runs)
+    for match in _QUOTED_URL_RE.finditer(raw):
+        start, end = match.span()
+        # ``=`` consumed by an earlier query run?  Then the reference single
+        # pass never saw it, and the value survived.
+        if any(run_start <= start < run_end for run_start, run_end in runs):
+            continue
+        spans.append((start, end))
+    spans.sort()
+
+    position = 0
+    for start, end in spans:
+        if start < position:  # contained in the previous span
+            position = max(position, end)
+            continue
+        if _needle_in_gap(lowered, needles, position, start):
+            return True
+        position = max(position, end)
+    return _needle_in_gap(lowered, needles, position, len(lowered))
+
+
 def _classify_link(body: str, payload: str) -> str:
     """Classify how the target appears in ``body``.
 
@@ -1545,13 +1601,35 @@ def _classify_link(body: str, payload: str) -> str:
         return "indexed"
 
     # The target text shows up but not as a direct anchor: on a search-result
-    # page that still means the engine listed it.  The query string is
-    # removed first, because a page that merely echoes the submitted query
-    # back (in the search box, or in its own links) has not listed
-    # anything - and counting that echo would hide the very URLs that need
-    # a second attempt.
+    # page that still means the engine listed it.  A page that merely *echoes*
+    # the submitted query back (in the search box, or in its own links) has
+    # not listed anything - and counting that echo would hide the very URLs
+    # that need a second attempt, so echoes are removed before deciding.
+    #
+    # That removal used to run over the whole body (~1.4 ms on 200 kB).  Now
+    # each occurrence is inspected instead: an occurrence is an echo when the
+    # run of characters before it starts with ``?`` (the regex's first
+    # alternative) or when it sits inside a ``="https://…"`` value (the
+    # second).  ``tools/classify_diff.py`` keeps the old implementation and
+    # fuzzes the two against each other; when the window cannot answer (a run
+    # longer than the budget, or a pathological number of occurrences) the
+    # whole-body scan runs exactly as before, so the result never changes.
+    needles = (bare.lower(), payload.lower())
+    # The gap search works on the lower-cased copy for speed, but the regexes
+    # must see the original text (``https?://`` is case sensitive).  Both are
+    # only interchangeable while ``lower()`` keeps the length, which it does
+    # for everything except a handful of expanding codepoints; those pages -
+    # and needles containing whitespace, which the reference's " " separator
+    # could join - take the whole-body scan exactly as before.
+    if len(lowered) == len(body) and not any(
+        char.isspace() for needle in needles for char in needle
+    ):
+        if _listed_mention(lowered, body, needles):
+            return "listed"
+        return ""
+
     stripped = _QUERY_ECHO_RE.sub(" ", body)
-    if bare.lower() in stripped.lower() or payload.lower() in stripped.lower():
+    if needles[0] in stripped.lower() or needles[1] in stripped.lower():
         return "listed"
     return ""
 

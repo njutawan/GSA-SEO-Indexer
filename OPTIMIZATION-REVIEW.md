@@ -376,7 +376,7 @@ dikerjakan.
 | # | Temuan | Terukur sekarang | Potensi | Risiko | Status |
 |---|---|---|---|---|---|
 | 1 | `_opener()` dibangun **per request** (`build_opener` + 3 handler) | **163 µs/request** — 13% dari 1,2 ms/request di loopback | cache opener per `(proxy, verify)`: **+24% @1 thread** (934→1.161 req/s), setara di 16 thread | rendah (handler urllib tidak menyimpan state) | **selesai** (§12.1) |
-| 2 | `_classify_link()` jalur "listed" menjalankan `_QUERY_ECHO_RE` atas **seluruh body** | **1,44 ms** per halaman 200 kB (anchor-hit 0,23 ms) | periksa jendela ±200 karakter di sekitar kemunculan pertama: **0,028 ms** (−98%) | sedang (echo bisa terpotong di batas jendela → perlu uji klasifikasi) | **belum — butuh korpus** |
+| 2 | `_classify_link()` jalur "listed" menjalankan `_QUERY_ECHO_RE` atas **seluruh body** | **1,44 ms** per halaman 200 kB (anchor-hit 0,23 ms) | pecah alternasi jadi dua regex + cari di celah antar-match: **1,43 → 0,41 ms** (3,5×) | rendah — dengan harness ekuivalensi (280k kasus, 0 selisih) | **selesai** (§13) |
 | 3 | Laporan JSON memakai `indent=1` dan `json.dump` per baris | **100k baris: 1,90 s, 17,7 MB** (CSV: 0,10 s, 5,8 MB) | compact + tulis per blok: **−35% waktu, −14% ukuran** (100k baris) | rendah (format berubah; pembaca JSON tetap kompatibel) | **selesai** (§12.2) |
 | 4 | "Run enabled" ke index service berjalan **sekuensial** di satu thread | 48 service × 200 ms = **9,4 s** | 8 worker paralel: **1,2 s** (7,8×) | rendah–sedang (butuh pembatas + status per service di GUI) | **selesai** (§12.3) |
 | 5 | `self.results` menahan semua baris sampai run selesai | **17,7 MB / 100k baris** (slots) | run 660k baris ≈ 115 MB; streaming ke disk menghapusnya | sedang (mengubah API `results`/`write_report`) | **belum — ubah API** |
@@ -429,7 +429,7 @@ workflow rilis dari tag.
 | `gsa_seo_indexer/emulator.py` | `do_GET` mendefinisikan `path` (F821 yang ditemukan ruff) |
 | `.github/workflows/ci.yml`, `pyproject.toml` | CI matrix 3.10–3.13, `ruff check`, dev extra (P3 #5) |
 | `gsa_seo_indexer/engine.py`, `httpclient.py` | **fix P4**: timeout socket di-set ulang ke `read_timeout` setelah connect (urllib dan pooled) — read timeout sebelumnya tertimpa connect timeout |
-| `tools/verify_all.py` | skrip verifikasi ulang 24 pemeriksaan P0–P4, offline, `--only p0..p4` |
+| `tools/verify_all.py` | skrip verifikasi ulang 25 pemeriksaan P0–P5, offline, `--only p0..p5` |
 | `gsa_seo_indexer/engine.py` | `_opener()` di-cache per (proxy, verify) — 200 request = 1 build (P4 #1) |
 | `gsa_seo_indexer/engine.py` | laporan JSON compact, ditulis per 512 baris (`_dump_row`) (P4 #2) |
 | `gsa_seo_indexer/services.py` | `submit_many()`: 8 service paralel, urutan hasil tetap, bisa di-Stop (P4 #3) |
@@ -437,6 +437,9 @@ workflow rilis dari tag.
 | `gsa_seo_indexer/cli.py` | `services --run-enabled --workers` — jalur paralel yang sama, headless |
 | `gsa_seo_indexer/watcher.py` | `_seen` dibatasi `max_seen` (deque + set) (P4 #4) |
 | `tests/test_watcher.py` | 5 test: baris baru, rotasi file, batas `_seen`, folder |
+| `gsa_seo_indexer/engine.py` | `_QUERY_RUN_RE` + `_QUOTED_URL_RE` dan pencarian di celah antar-match: keputusan "listed" 3,5× lebih cepat, hasil identik (P5) |
+| `tools/classify_diff.py` | harness ekuivalensi: implementasi lama disimpan sebagai referensi, korpus 12+ kasus tetap dan generator acak, mode `--only-timing` |
+| `tests/test_classify_equiv.py` | 8 test: fuzz via harness, korpus tetap, dan tiap bentuk yang menentukan (echo, teks, anchor, query) |
 | `tests/test_engine.py` | 57 test: P0/P1/P2/P3 + `ReadTimeoutTest`, `OpenerCacheTest`, `ReportFormatTest` |
 | `tests/test_gui_rows.py` | 3 test: cap baris tabel GUI (dengan stub tkinter) |
 | `tests/test_perf_cache.py` | 12 test: streak host, prune/batas DNS, aktivasi cache |
@@ -458,8 +461,11 @@ python tools/bench_local.py 400 16
 # benar-benar memisahkan overhead klien: 1 thread
 python tools/bench_local.py 400 1
 
-# verifikasi ulang semua klaim P0-P3 sekaligus (offline, ±16 s)
+# verifikasi ulang semua klaim P0-P5 sekaligus (offline, ±20 s)
 python tools/verify_all.py
+
+# ekuivalensi klasifikasi: implementasi lama vs sekarang, 40k kasus acak
+python tools/classify_diff.py --fuzz 40000 --seed 42
 
 # test regresi (tanpa dependency tambahan)
 python -m unittest discover -s tests -v
@@ -639,3 +645,106 @@ python tools/bench_local.py 400 1          # +24% vs commit sebelumnya
   melewati sisa antrean, dan jalur HTTP nyata ke emulator.
 - `UrlWatcherTest` (5) — baris baru saja, komentar/kosong diabaikan, file
   terpotong dibaca dari awal, `_seen` dibatasi, folder diperluas.
+
+---
+
+## 13. P5 — klasifikasi lebih murah tanpa mengubah satu pun keputusan
+
+`_classify_link()` memutuskan "listed" dengan cara menghapus semua *echo* lebih
+dulu (`_QUERY_ECHO_RE.sub`) lalu mencari target di sisa teks. Pada halaman
+165 kB langkah itu memakan **0,86 ms**, dan ia dijalankan untuk setiap halaman
+yang menyebut target.
+
+### 13.1 Yang dicoba lebih dulu, dan gagal
+
+Rencana awal: periksa setiap kemunculan secara lokal (jendela ±200 karakter)
+alih-alih memindai seluruh body. Terukur 0,03 ms — tapi harness pembanding
+langsung membuktikan itu **tidak setara**:
+
+| Percobaan | Selisih vs implementasi lama |
+|---|---|
+| Aturan "run sebelum kemunculan dimulai dengan `?`" | 828 dari 5.000 kasus |
+| + aturan nilai `="https://…"`, skema case-sensitive | 175 kasus |
+| + `?` di mana pun di dalam run yang sama | 126 kasus |
+
+Penyebabnya dua hal yang tidak terlihat dari membaca kode:
+
+1. `=\s*["'](https?://[^"']*)["']` memakai `[^"']*`, jadi satu match bisa
+   **melintasi spasi, `<`, dan `>`** sampai kutip berikutnya - jauh lebih jauh
+   dari jendela mana pun.
+2. Match saling memakan: `="http://a <a href='http://b'` membuat alt2 pertama
+   menelan `href=` sehingga alt2 kedua tidak pernah jalan.
+
+Heuristik lokal dibuang. Yang dipakai sekarang **algoritma yang setara secara
+konstruksi**, bukan perkiraan.
+
+### 13.2 Temuan sebenarnya: alternasinya yang mahal
+
+| 165 kB | Waktu |
+|---|---|
+| `_QUERY_ECHO_RE.sub()` (satu alternasi, kode lama) | 0,86 ms |
+| `\?[^"'<>\s]*` saja | **0,06 ms** |
+| `=\s*["']https?://[^"']*["']` saja | **0,13 ms** |
+| keduanya berurutan | 0,19 ms |
+
+Alternasi `A\|B` mematikan optimasi pencarian literal di mesin regex, jadi dua
+pola terpisah **4,5× lebih cepat** daripada satu pola gabungan.
+
+### 13.3 Algoritma: cari di celah antar-match
+
+Menghapus echo lalu mencari target di sisa teks sama artinya dengan mencari
+target di **celah di antara match**, tanpa membuat salinan body:
+
+1. kumpulkan match `_QUERY_RUN_RE` (alt1);
+2. kumpulkan match `_QUOTED_URL_RE` (alt2) **pada teks asli**, lalu buang yang
+   `=`-nya jatuh di dalam salah satu match alt1 - persis kondisi di mana
+   pass tunggal lama sudah menelan `=` itu (kasus `<a href= ?url="http://…">`);
+3. gabungkan, urutkan, dan cari needle di setiap celah dengan `str.find`;
+   berhenti pada kecocokan pertama.
+
+Karena `https?://` peka huruf besar-kecil, regex tetap dijalankan pada teks
+asli sementara pencarian memakai salinan `lower()`; keduanya hanya ditukar
+ketika `len(lower) == len(body)` (beberapa kodepoint memanjang saat
+di-lower-case) - kalau tidak, jalur lama dipakai apa adanya. Payload yang
+mengandung spasi juga memakai jalur lama, karena `sub(" ")` bisa menyambung
+teks di batas match.
+
+### 13.4 Bukti ekuivalensi, bukan klaim
+
+`tools/classify_diff.py` menyimpan implementasi lama **apa adanya** sebagai
+referensi dan membandingkan hasil keduanya:
+
+```bash
+python tools/classify_diff.py --fuzz 40000 --seed 42
+```
+
+- 7 seed × 40.000 kasus acak + 22 kasus tetap = **280.014 perbandingan, 0 selisih**.
+- Korpusnya sengaja jahat: kutip tidak tertutup, kutip campur (`="…'`), query
+  sebelum atribut, skema huruf besar, `?` di dalam nilai, run 3.000 karakter,
+  target di awal body, dan target diulang 100 kali di dalam echo.
+- Harness-nya terbukti bergigi: implementasi "sub dua kali" yang naif
+  (ALT1 lalu ALT2) **tertangkap** oleh dua kasus tetap (`<a href= ?url="…">`).
+
+### 13.5 Dampak terukur
+
+| | Sebelum | Sesudah |
+|---|---|---|
+| Halaman 165 kB, keputusan "listed" | 1,43 ms | **0,41 ms** (3,5×) |
+| Halaman 165 kB, echo saja | 1,66 ms | **0,43 ms** (3,8×) |
+| End-to-end, 400 request / 8 thread, halaman 164 kB "listed" | 325-335 req/s | **570-611 req/s** (+78%) |
+| End-to-end, halaman 164 kB echo | 300-340 req/s | **586-624 req/s** (+85%) |
+| Klasifikasi yang dihasilkan | `listed=400` | `listed=400` (identik) |
+
+### 13.6 Test
+
+```bash
+python -m unittest discover -s tests -v      # 100 test (+8)
+python tools/verify_all.py --only p5         # 1 pemeriksaan
+```
+
+- `FuzzEquivalenceTest` — menjalankan harness (3.000 kasus, seed 7) lewat
+  subprocess dan membandingkan seluruh korpus tetap dengan referensi.
+- `ListingDecisionTest` — tiap bentuk yang menentukan satu per satu: echo saja
+  (bukan listed), teks terlihat, query sebelum atribut (tetap listed), anchor
+  asli (indexed), target di awal body, dan payload ber-query string yang
+  memang tidak pernah "listed" oleh kedua implementasi.
