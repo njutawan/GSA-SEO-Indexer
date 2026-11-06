@@ -20,6 +20,7 @@ import select
 import ssl
 import threading
 import time
+import zlib
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
@@ -32,6 +33,43 @@ MAX_BODY = 512 * 1024
 _SSL_FALLBACK_TTL = 3600.0
 _unverified_hosts: dict[str, float] = {}
 _unverified_hosts_lock = threading.Lock()
+
+
+def decode_content(raw: bytes, encoding: str, limit: int = MAX_BODY) -> bytes:
+    """Undo a ``Content-Encoding`` and never return more than ``limit`` bytes.
+
+    ``urllib`` and ``http.client`` both hand back the *compressed* bytes, so
+    the caller has to decompress - and it has to do that carefully:
+
+    * the body may have been cut at ``limit`` (the readers cap the transfer),
+      so a truncated stream is normal and must still yield what it can;
+    * a server may claim ``gzip`` and send plain text, so a failure falls
+      back to the bytes as they arrived;
+    * a decompressed body is bounded too, otherwise a 1 kB zip bomb becomes
+      the new peak memory of the run.
+    """
+    enc = (encoding or "").strip().lower()
+    if not enc or enc == "identity":
+        return raw[:limit]
+    if enc in ("gzip", "x-gzip"):
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    elif enc == "deflate":
+        # "deflate" is meant to be zlib-wrapped, but plenty of servers send a
+        # raw deflate stream; try the standard one first and fall back.
+        decoder = zlib.decompressobj()
+    else:
+        return raw[:limit]
+    try:
+        out = decoder.decompress(raw, limit)
+    except zlib.error:
+        if enc == "deflate":
+            try:
+                out = zlib.decompressobj(-zlib.MAX_WBITS).decompress(raw, limit)
+            except zlib.error:
+                return raw[:limit]
+        else:
+            return raw[:limit]
+    return out[:limit]
 
 
 def needs_ssl_fallback(host: str) -> bool:
@@ -363,6 +401,9 @@ class PooledHttpClient:
                 raw = conn.getresponse()
                 body = raw.read(MAX_BODY)
                 hdrs = {k.lower(): v for k, v in raw.getheaders()}
+                # Decompress after the headers are known: the length checks
+                # below must see the compressed size the server actually sent.
+                decoded = decode_content(body, hdrs.get("content-encoding", ""), MAX_BODY)
                 status = raw.status
                 # Keep the connection only when the server allows it and the
                 # whole body was consumed.  A body larger than MAX_BODY is
@@ -388,7 +429,7 @@ class PooledHttpClient:
                     self.pool.give(scheme, host, port, conn, self.proxy or "")
                 return Response(
                     status=status,
-                    body=body.decode("utf-8", "replace"),
+                    body=decoded.decode("utf-8", "replace"),
                     headers=hdrs,
                 )
             except Exception as exc:  # noqa: BLE001

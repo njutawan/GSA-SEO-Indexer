@@ -27,6 +27,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
+from . import httpclient
 from .httpclient import (
     PooledHttpClient,
     needs_ssl_fallback,
@@ -255,6 +256,12 @@ class Settings:
     # a round of connections without saving many requests.  It stays
     # available behind --preflight for lists that are mostly dead.
     preflight: bool = False
+    # Accept-Encoding: gzip.  The bodies here are HTML pages of ping/statistic
+    # sites, which compress ~5-8x; the cost is one zlib call per response.
+    # Opt-in, because a handful of these sites answer 406 to an encoding they
+    # do not expect - and because an end-to-end A/B on the real list has not
+    # been run (see OPTIMIZATION-REVIEW.md, gzip).
+    accept_gzip: bool = False
     # Batching is 4.5x faster but drops the backlinks (a site usually
     # stores only the first URL of a batch), so it stays opt-in.
     batch_size: int = 0
@@ -349,6 +356,7 @@ class Settings:
             s.dns_ttl = get("misc", "dns ttl", float, s.dns_ttl)
             s.dns_negative_ttl = get("misc", "dns negative ttl", float, s.dns_negative_ttl)
             s.preflight = get("misc", "preflight", bool, s.preflight)
+            s.accept_gzip = get("misc", "accept gzip", bool, s.accept_gzip)
             s.reuse_connections = get("misc", "connection pool", bool, s.reuse_connections)
             s.batch_size = get("misc", "batch size", int, s.batch_size)
             s.fast_mode = get("misc", "fast mode", bool, s.fast_mode)
@@ -397,6 +405,7 @@ class Settings:
             "dns ttl": f"{self.dns_ttl:g}",
             "dns negative ttl": f"{self.dns_negative_ttl:g}",
             "preflight": "1" if self.preflight else "0",
+            "accept gzip": "1" if self.accept_gzip else "0",
             "connection pool": "1" if self.reuse_connections else "0",
             "batch size": str(self.batch_size),
             "fast mode": "1" if self.fast_mode else "0",
@@ -714,12 +723,18 @@ class Indexer:
     ``submit_batch`` did not, and the pooled client ignored the user-agent
     rotation entirely.
         """
-        return {
+        headers = {
             "User-Agent": self._pick_ua(),
             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Referer": "https://www.google.com/",
         }
+        # urllib asks for ``identity`` on its own; naming gzip explicitly is
+        # what makes a server compress.  Both transports decode the answer
+        # with httpclient.decode_content(), so the classifier sees text.
+        if self.settings.accept_gzip:
+            headers["Accept-Encoding"] = "gzip"
+        return headers
 
     def _request(
         self,
@@ -757,7 +772,9 @@ class Indexer:
         req = self._request(url, accept="text/html,application/xhtml+xml")
         try:
             with self._urlopen(req, self._pick_proxy(), self._timeout()) as resp:
-                body = resp.read(120000).decode("utf-8", "replace").lower()
+                # The noindex test only needs the text, and the page may now
+                # arrive gzipped, so read it through the same decoder.
+                body = self._read_body(resp)[:120000].lower()
                 code = resp.status
         except urllib.error.HTTPError as exc:
             if exc.code in (401, 403, 405, 429):
@@ -898,7 +915,17 @@ class Indexer:
                 return resp.body[: self.settings.max_body_bytes], resp.status
             # the pooled client failed - fall back to urllib once
         with self._urlopen(req, proxy, self._timeout()) as resp:
-            return resp.read(self.settings.max_body_bytes).decode("utf-8", "replace"), resp.status
+            return self._read_body(resp), resp.status
+
+    def _read_body(self, resp) -> str:
+        """Read at most ``max_body_bytes`` and undo any Content-Encoding."""
+        raw = resp.read(self.settings.max_body_bytes)
+        # ``headers`` is optional: the tests feed response doubles that only
+        # implement read(), and an unencoded body needs no header at all.
+        headers = getattr(resp, "headers", None)
+        encoding = headers.get("Content-Encoding", "") if headers else ""
+        decoded = httpclient.decode_content(raw, encoding, self.settings.max_body_bytes)
+        return decoded.decode("utf-8", "replace")
 
     def _timeout(self) -> float:
         """Timeout for the read phase of a request.

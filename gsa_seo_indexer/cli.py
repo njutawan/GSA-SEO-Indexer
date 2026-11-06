@@ -182,6 +182,13 @@ def build_parser() -> argparse.ArgumentParser:
         "sites in the list are dead, costs a round of connections otherwise)",
     )
     s.add_argument(
+        "--gzip",
+        action="store_true",
+        default=None,
+        help="ask servers for gzip (fewer bytes on the wire; off by default "
+        "because some ping sites answer 406 to it)",
+    )
+    s.add_argument(
         "--connect-timeout",
         type=float,
         default=None,
@@ -452,6 +459,7 @@ def cmd_submit(args) -> int:
         read_timeout=read_timeout,
         skip_dead_hosts=not opt(args.no_skip_dead, not cfg.skip_dead_hosts),
         preflight=bool(opt(args.preflight, cfg.preflight)),
+        accept_gzip=bool(opt(args.gzip, cfg.accept_gzip)),
         reuse_connections=bool(opt(args.pool, cfg.reuse_connections)),
         batch_size=batch_size,
         fast_mode=fast,
