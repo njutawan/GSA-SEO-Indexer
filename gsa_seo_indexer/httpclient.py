@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import http.client
 import select
-import socket
 import ssl
 import threading
 import time
@@ -302,7 +301,6 @@ class PooledHttpClient:
         last_error = ""
         for attempt in range(2):  # one retry, for a connection the server closed
             conn = self.pool.take(scheme, host, port, self.proxy or "")
-            reused = conn is not None
             try:
                 if conn is None:
                     conn = self._connect(scheme, host, port)

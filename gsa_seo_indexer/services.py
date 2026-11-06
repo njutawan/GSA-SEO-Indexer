@@ -17,8 +17,8 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
+from .httpclient import tls_context
 from .paths import runtime_dir
 
 # Where the user's paid-service credentials live: {service: {variable: value}}.
@@ -147,7 +147,13 @@ class IndexService:
         if content_type:
             req.add_header("Content-Type", content_type)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            # Paid index services are addressed with an API key (header or
+            # body), so their certificates are always verified.  The
+            # unverified fallback in engine._urlopen exists for the ping
+            # hosts with broken chains; it must never be used here.
+            with urllib.request.urlopen(
+                req, timeout=timeout, context=tls_context(True)
+            ) as resp:
                 text = resp.read(200000).decode("utf-8", "replace")
                 if self.is_success(text):
                     return True, f"HTTP {resp.status}"

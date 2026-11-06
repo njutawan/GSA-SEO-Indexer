@@ -50,6 +50,7 @@ sehingga target muncul sebagai backlink di domain ber-otoritas tinggi.
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Dependencies](https://img.shields.io/badge/Dependencies-0-success?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-active-success?style=flat-square)
+![CI](https://github.com/njutawan/GSA-SEO-Indexer/actions/workflows/ci.yml/badge.svg?style=flat-square)
 ![Version](https://img.shields.io/badge/Version-1.2.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey?style=flat-square)
@@ -214,7 +215,10 @@ Flag penting: `--threads`, `--proxy`, `--proxy-file`, `--test-proxies`, `--repor
   untuk host berantai rusak (diingat per host, TTL 1 jam)
 - 📊 **Laporan** — CSV & JSON, opsional dengan kolom `Indexable`
 - 🎛️ **config.ini** — key meniru config asli GSA, bisa baca `config.ini` GSA langsung
-- 🔐 **API key terpisah** — `keys.json`, tidak pernah ditulis ke laporan
+- 🔐 **API key terpisah** — `keys.json`, tidak pernah ditulis ke laporan; index service
+  berbayar **selalu** memverifikasi sertifikat TLS
+- 🧪 **71 test + CI** — `python -m unittest discover -s tests`, matrix Python 3.10–3.13
+  dan `ruff check` (dev-only; runtime tetap zero-dependency)
 
 ---
 
@@ -266,6 +270,8 @@ Diuji nyata terhadap `http://example.com/` dengan deteksi backlink ketat.
 - ✅ Tidak ada request ke Google/Bing — murni digital footprint, sama seperti program aslinya.
 - ⚠️ Daftar legacy sebagian besar sudah mati — ini snapshot 2019–2023, bukan daftar fresh.
 - ⚠️ Proxy publik gratis terbukti **tidak layak** (2,9× lebih lambat, HTTP-ok turun 44→24).
+- ⚠️ Fallback tanpa verifikasi sertifikat hanya dipakai untuk host ping yang rantainya rusak;
+  request yang membawa API key (index service) selalu terverifikasi.
 
 ---
 

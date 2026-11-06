@@ -15,7 +15,6 @@ import functools
 import http.client
 import json
 import os
-import queue
 import re
 import random
 import ssl
@@ -26,7 +25,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Callable, Iterable, Iterator, Sequence
+from typing import Callable, Iterable, Sequence
 
 from .httpclient import (
     PooledHttpClient,
@@ -36,6 +35,12 @@ from .httpclient import (
 )
 from .paths import resource_dir, runtime_dir
 from .perf import DnsCache, HostCache, activate_dns_cache, deactivate_dns_cache, host_of, port_of
+
+# A preflight probe is a bare TCP connect, so it is cheap and the pool used
+# to be threads x 2 (100 sockets at the default).  Windows' default fd limit
+# and small home routers do not enjoy that; 64 is plenty to keep the probe
+# round short.
+MAX_PREFLIGHT_WORKERS = 64
 
 APP_NAME = "GSA Indexer"
 APP_VERSION = "1.2.0"
@@ -183,7 +188,10 @@ class Settings:
     user_agents: list[str] = field(default_factory=list)
     follow_redirects: bool = True
     max_sites: int = 0  # 0 == unlimited
-    random_delay: bool = True
+    # config.ini ships "random delay = 0" and the measurements found no
+    # yield benefit, only wall-clock time; the dataclass default used to
+    # disagree with both and made a bare Settings() sleep in every worker.
+    random_delay: bool = False
     # Measured: 42% of the successful requests need more than 3 s and
     # those account for 62% of the time.  Cutting the cap from 10 s to 5 s
     # is 1.5x faster with an identical number of HTTP replies, backlinks
@@ -574,6 +582,32 @@ class Indexer:
                 return self._opener(proxy, verify=False).open(req, timeout=timeout)
             raise
 
+    # -- request shape ----------------------------------------------------
+    def _headers(self) -> dict[str, str]:
+        """The single header set every submission uses.
+
+    The header set matters: some of these sites answer 406 when
+    ``Accept-Encoding`` is missing or when ``Upgrade-Insecure-Requests`` is
+    present, and the browser-like set is what the original GSA program sends.
+    Both transports (urllib and the opt-in pooled client) send exactly these
+    headers; before this existed, ``submit_one`` sent a Referer and
+    ``submit_batch`` did not, and the pooled client ignored the user-agent
+    rotation entirely.
+        """
+        return {
+            "User-Agent": self._pick_ua(),
+            "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.google.com/",
+        }
+
+    def _request(self, url: str, accept: str = "") -> urllib.request.Request:
+        """Build the GET request for ``url`` with the shared headers."""
+        headers = self._headers()
+        if accept:
+            headers["Accept"] = accept
+        return urllib.request.Request(url, headers=headers, method="GET")
+
     # -- URL health check -------------------------------------------------
     def check_url(self, url: str) -> tuple[bool, str]:
         """Verify the target URL is reachable and indexable.
@@ -583,14 +617,7 @@ class Indexer:
         """
         if not url.lower().startswith(("http://", "https://")):
             url = "http://" + url
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": self._pick_ua(),
-                "Accept": "text/html,application/xhtml+xml",
-            },
-            method="GET",
-        )
+        req = self._request(url, accept="text/html,application/xhtml+xml")
         try:
             with self._urlopen(req, self._pick_proxy(), self._timeout()) as resp:
                 body = resp.read(120000).decode("utf-8", "replace").lower()
@@ -634,16 +661,7 @@ class Indexer:
                 error="host known dead",
             )
 
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": self._pick_ua(),
-                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Referer": "https://www.google.com/",
-            },
-            method="GET",
-        )
+        req = self._request(url)
         try:
             body, code = self._fetch(url, req, proxy)
             elapsed = int((time.perf_counter() - started) * 1000)
@@ -706,7 +724,7 @@ class Indexer:
         if self.settings.reuse_connections:
             resp = self._http(proxy or "").get(
                 url,
-                headers={"User-Agent": self._pick_ua()},
+                headers=self._headers(),
                 follow_redirects=self.settings.follow_redirects,
             )
             if resp.status != 0:
@@ -784,19 +802,12 @@ class Indexer:
             joined = ",".join(payloads)
         url = target.with_payload(joined)
         started = time.perf_counter()
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": self._pick_ua(),
-                "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
-                "Referer": "https://www.google.com/",
-            },
-            method="GET",
-        )
+        req = self._request(url)
         try:
-            with self._urlopen(req, self._pick_proxy(), self._timeout()) as resp:
-                body = resp.read(300000).decode("utf-8", "replace")
-                code = resp.status
+            # Same transport as submit_one: the pooled client when it is
+            # enabled, urllib otherwise.  This used to bypass _fetch, so a
+            # batch run silently ignored --pool and the read timeout.
+            body, code = self._fetch(url, req, self._pick_proxy())
             elapsed = int((time.perf_counter() - started) * 1000)
             out = []
             for p in payloads:
@@ -1021,9 +1032,15 @@ class Indexer:
                     if on_alive:
                         on_alive(host)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, self.settings.threads * 2)) as pool:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=self._preflight_workers()
+        ) as pool:
             list(pool.map(probe, hosts))
         return alive
+
+    def _preflight_workers(self) -> int:
+        """Probe pool size: twice the run's threads, but never an fd storm."""
+        return max(1, min(self.settings.threads * 2, MAX_PREFLIGHT_WORKERS))
 
     def _probe_host(self, host: str, port: int = 80) -> bool:
         """Cheap liveness probe: does the host complete a TCP connect?"""
@@ -1074,7 +1091,6 @@ class Indexer:
         self.skipped_dead = 0
 
         primary = self._cap_targets(dedupe_by_host(targets))
-        primary_all = list(primary)
         self.stats = RunStats(total=len(urls) * len(primary))
         if self.settings.preflight:
             alive = self.preflight(primary)

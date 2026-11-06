@@ -15,6 +15,7 @@ binary, or resource is used — only knowledge of how it works.
 ![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
 ![Dependencies](https://img.shields.io/badge/Dependencies-0-success?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-active-success?style=flat-square)
+![CI](https://github.com/njutawan/GSA-SEO-Indexer/actions/workflows/ci.yml/badge.svg?style=flat-square)
 ![Version](https://img.shields.io/badge/Version-1.0.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey?style=flat-square)
@@ -150,7 +151,10 @@ Key flags: `--threads`, `--proxy`, `--report`, `--modern`, `--batch`, `--fast`,
 - 🔌 **Proxy rotation** — 4 public sources (~80,000 candidates), 2-stage validation
 - 📊 **Reports** — CSV & JSON, optional `Indexable` column
 - 🎛️ **config.ini** — keys mirror the original GSA config; can read GSA's own `config.ini`
-- 🔐 **Separate API keys** — `keys.json`, never written to reports
+- 🔐 **Separate API keys** — `keys.json`, never written to reports; paid index
+  services **always** verify the TLS certificate
+- 🧪 **71 tests + CI** — `python -m unittest discover -s tests`, Python 3.10–3.13
+  matrix plus `ruff check` (dev-only; the runtime stays dependency-free)
 
 ---
 
@@ -202,6 +206,8 @@ Real-world tested against `http://example.com/` with strict backlink detection.
 - ✅ No requests to Google/Bing — purely digital footprints, like the original program.
 - ⚠️ Most of the legacy list is dead — it's a 2019–2023 snapshot, not a fresh list.
 - ⚠️ Free public proxies proved **not viable** (2.9× slower, HTTP-ok drops 44 → 24).
+- ⚠️ The unverified-TLS fallback is only for ping hosts with broken chains; requests
+  that carry an API key (index services) are always verified.
 
 ---
 

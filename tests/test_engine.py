@@ -612,3 +612,99 @@ class ConnectTimeoutTest(unittest.TestCase):
 
         self.assertEqual(result.status, "submitted")
         self.assertEqual(captured["timeout"], 7.0)
+
+
+# --------------------------------------------------------------------------
+# P3 — one request shape, one timeout policy, one TLS policy
+# --------------------------------------------------------------------------
+class SharedRequestShapeTest(unittest.TestCase):
+    def _indexer(self, **kwargs) -> Indexer:
+        indexer = Indexer(
+            Settings(
+                persist_host_cache=False,
+                dns_cache=False,
+                random_delay=False,
+                skip_dead_hosts=False,
+                **kwargs,
+            )
+        )
+        indexer._ua_pool = ["UA-fixed/1.0"]
+        return indexer
+
+    def test_the_request_builder_carries_the_browser_headers(self) -> None:
+        req = self._indexer()._request("http://s.example/?url=x")
+        headers = {key.lower(): value for key, value in req.header_items()}
+        self.assertEqual(headers["user-agent"], "UA-fixed/1.0")
+        self.assertEqual(headers["accept-language"], "en-US,en;q=0.9")
+        self.assertEqual(headers["referer"], "https://www.google.com/")
+        self.assertIn("text/html", headers["accept"])
+
+    def test_check_url_keeps_its_narrower_accept(self) -> None:
+        req = self._indexer()._request("http://s.example/", accept="text/html")
+        self.assertEqual(req.headers["Accept"], "text/html")
+
+    def test_single_and_batch_submissions_send_identical_headers(self) -> None:
+        indexer = self._indexer()
+        seen: list[dict[str, str]] = []
+
+        def fake_fetch(_url, req, _proxy=None):
+            seen.append({key.lower(): value for key, value in req.header_items()})
+            return '<a href="http://t.example/">x</a>', 200
+
+        with mock.patch.object(indexer, "_fetch", fake_fetch):
+            indexer.submit_one(
+                PingTarget(url="http://s.example/?url=", mode="query"), "http://t.example/"
+            )
+            indexer.submit_batch(
+                PingTarget(url="http://s.example/?url=", mode="append"),
+                ["http://t.example/", "http://t2.example/"],
+            )
+
+        self.assertEqual(len(seen), 2)
+        self.assertEqual(seen[0], seen[1])
+        self.assertEqual(
+            set(seen[0]), {"user-agent", "accept", "accept-language", "referer"}
+        )
+
+    def test_the_pooled_transport_gets_the_same_headers(self) -> None:
+        indexer = self._indexer(reuse_connections=True)
+        captured: dict[str, str] = {}
+
+        class _FakeClient:
+            def get(self, _url, headers=None, follow_redirects=True):
+                captured.update(headers or {})
+                return httpclient.Response(
+                    status=200, body='<a href="http://t.example/">x</a>'
+                )
+
+        with mock.patch.object(indexer, "_http", lambda _proxy="": _FakeClient()):
+            result = indexer.submit_one(
+                PingTarget(url="http://s.example/?url=", mode="query"), "http://t.example/"
+            )
+
+        self.assertEqual(result.status, "submitted")
+        self.assertTrue(result.indexable)
+        self.assertEqual(captured["User-Agent"], "UA-fixed/1.0")
+        self.assertEqual(captured["Referer"], "https://www.google.com/")
+
+
+class PreflightWorkerCapTest(unittest.TestCase):
+    def test_default_pool_is_twice_the_threads(self) -> None:
+        indexer = Indexer(
+            Settings(threads=4, persist_host_cache=False, dns_cache=False)
+        )
+        self.assertEqual(indexer._preflight_workers(), 8)
+
+    def test_the_burst_is_capped(self) -> None:
+        for threads in (50, 100, 400):
+            indexer = Indexer(
+                Settings(threads=threads, persist_host_cache=False, dns_cache=False)
+            )
+            self.assertEqual(indexer._preflight_workers(), engine.MAX_PREFLIGHT_WORKERS)
+
+
+class SettingsDefaultsTest(unittest.TestCase):
+    def test_random_delay_matches_config_ini(self) -> None:
+        # config.ini ships "random delay = 0" and the measurements found no
+        # benefit; the dataclass default used to disagree with both.
+        self.assertFalse(Settings().random_delay)

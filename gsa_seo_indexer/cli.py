@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 import time
 from pathlib import Path
@@ -736,7 +735,7 @@ def cmd_crawl(args) -> int:
     print(
         f"[crawl] {stats.pages_fetched} page(s), {len(stats.urls)} URL(s), "
         f"{len(stats.errors)} error(s)"
-        + (f" - stopped early" if stats.stopped else "")
+        + (" - stopped early" if stats.stopped else "")
         + (f" - written to {args.out}" if args.out else ""),
         file=sys.stderr,
     )

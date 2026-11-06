@@ -10,8 +10,6 @@ from __future__ import annotations
 import concurrent.futures
 import random
 import re
-import socket
-import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -154,7 +152,7 @@ def test_proxy(
         req = urllib.request.Request(test_url, headers={"User-Agent": UA})
         with opener.open(req, timeout=timeout) as resp:
             return resp.status in (200, 204, 301, 302)
-    except urllib.error.HTTPError as exc:
+    except urllib.error.HTTPError:
         # 407 means the proxy wants credentials; 403 from some proxies just
         # means they refuse this particular host.  Neither is a working
         # proxy for our purposes.

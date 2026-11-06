@@ -949,10 +949,10 @@ class IndexerApp(tk.Tk):
         txt.insert("1.0", "\n".join(urls))
 
         def recount(*_a) -> None:
-            lines = [l.strip() for l in txt.get("1.0", "end").splitlines()]
-            lines = [l for l in lines if l and not l.startswith("#")]
+            lines = [line.strip() for line in txt.get("1.0", "end").splitlines()]
+            lines = [line for line in lines if line and not line.startswith("#")]
             dupes = len(lines) - len(set(lines))
-            bad = sum(1 for l in lines if not validate_url(l)[0])
+            bad = sum(1 for line in lines if not validate_url(line)[0])
             info.set(
                 f"{len(lines)} URL(s)   {dupes} duplicate   {bad} invalid"
                 + (f"   (from {source})" if source else "")
@@ -968,7 +968,7 @@ class IndexerApp(tk.Tk):
 
         def add_urls(new_urls: list[str]) -> None:
             """Append crawl results to the preview, skipping duplicates."""
-            existing = {l.strip() for l in txt.get("1.0", "end").splitlines() if l.strip()}
+            existing = {line.strip() for line in txt.get("1.0", "end").splitlines() if line.strip()}
             fresh = [u for u in new_urls if u not in existing]
             if fresh:
                 if existing:
@@ -986,8 +986,8 @@ class IndexerApp(tk.Tk):
         btn_run.pack(side="right")
 
         def start() -> None:
-            lines = [l.strip() for l in txt.get("1.0", "end").splitlines()]
-            lines = [l for l in lines if l and not l.startswith("#")]
+            lines = [line.strip() for line in txt.get("1.0", "end").splitlines()]
+            lines = [line for line in lines if line and not line.startswith("#")]
             if not lines:
                 messagebox.showwarning("No URLs", "The list is empty.", parent=win)
                 return
@@ -1000,13 +1000,13 @@ class IndexerApp(tk.Tk):
     @staticmethod
     def _dedupe_preview(txt: tk.Text, recount) -> None:
         """Remove duplicate lines from the preview, keeping first order."""
-        lines = [l.strip() for l in txt.get("1.0", "end").splitlines()]
+        lines = [line.strip() for line in txt.get("1.0", "end").splitlines()]
         seen: set[str] = set()
         out: list[str] = []
-        for l in lines:
-            if l and l not in seen:
-                seen.add(l)
-                out.append(l)
+        for line in lines:
+            if line and line not in seen:
+                seen.add(line)
+                out.append(line)
         txt.delete("1.0", "end")
         txt.insert("1.0", "\n".join(out))
         recount()
@@ -1512,9 +1512,9 @@ class IndexerApp(tk.Tk):
             return
         try:
             lines = [
-                l.strip()
-                for l in Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
-                if l.strip() and not l.strip().startswith("#")
+                line.strip()
+                for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
+                if line.strip() and not line.strip().startswith("#")
             ]
         except OSError as exc:
             messagebox.showerror("Proxy list", str(exc))

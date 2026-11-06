@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import base64
 import http.server
-import json
 import re
 import socketserver
 import threading
@@ -169,6 +168,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if not self.config.authorised(self.headers):
             self._send(401, "Unauthorized")
             return
+        # ``path`` used to be missing here (it was only defined in do_POST),
+        # so a GET for the root page raised NameError once the service list
+        # was empty.
         path = urllib.parse.urlparse(self.path).path
         if path in ("/", "") and not self.config.services:
             self._send(200, INDEXER_ROOT_PAGE)
@@ -191,7 +193,6 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self._send(413, "Payload too large")
             return
         body = self.rfile.read(length).decode("utf-8", "replace") if length else ""
-        path = urllib.parse.urlparse(self.path).path
         svc = self.config.service_for_path(self.path, self.headers.get("Host", ""))
         if svc is None:
             self._send(404, "Not found")

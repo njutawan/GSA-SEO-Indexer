@@ -33,8 +33,24 @@ dependencies = []
 [project.scripts]
 gsa-seo-indexer = "gsa_seo_indexer.cli:main"
 
+[project.optional-dependencies]
+# Development only; the runtime package still has zero dependencies.
+dev = ["ruff>=0.6"]
+
 [tool.setuptools]
 packages = ["gsa_seo_indexer"]
 
 [tool.setuptools.package-data]
 gsa_seo_indexer = ["data/*", "index_service/*"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+# Ghidra/decompiler scratch scripts kept as evidence, not product code.
+extend-exclude = ["reverse_engineering_evidence"]
+
+[tool.ruff.lint]
+# Errors and dead code only (pyflakes + a few pycodestyle checks).  Style
+# churn is not worth a dependency; these are the rules that found real bugs
+# (an undefined name in the emulator, unused imports after refactors).
+select = ["E4", "E7", "E9", "F"]

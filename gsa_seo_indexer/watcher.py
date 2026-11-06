@@ -10,9 +10,9 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
-from typing import Callable, Iterable, Sequence
+from typing import Callable, Sequence
 
-from .engine import Indexer, PingTarget, read_url_file
+from .engine import Indexer, PingTarget
 
 
 class UrlWatcher:

@@ -291,31 +291,87 @@ python -m unittest discover -s tests -v     # 60 test
 
 ---
 
-## 7. Yang masih dibutuhkan (roadmap)
+## 7. P3 — selesai (dan dampak terukurnya)
 
-### P3 — kebersihan arsitektur
+### 7.1 Satu bentuk request, satu kebijakan timeout/TLS
 
-- **Satu jalur HTTP saja.** `submit_one()`, `submit_batch()`, dan `PooledHttpClient.get()`
-  masing-masing membangun header, menangani redirect, timeout, dan fallback TLS.
-  Perbedaan kecil di antaranya (mis. `max_redirects`, timeout) adalah sumber bug masa
-  depan. Satukan di satu client, sisakan `submit_*` sebagai orkestrasi.
-- **`random_delay` default `True`** (`engine.py:179`) bertentangan dengan `config.ini`
-  (`random delay = 0`) dan dokumentasi ("tidak ada manfaat terukur, hanya menambah
-  waktu"). Samakan ke `False`; sekarang API call langsung (`Indexer(Settings())`)
-  tidur 10–80 ms per request tanpa alasan.
-- **TLS fallback tanpa verifikasi** (`engine.py:_urlopen`) membuat siapa pun bisa
-  men-downgrade koneksi dengan sertifikat rusak. Untuk pengiriman URL publik risikonya
-  rendah, tapi sebaiknya tercatat eksplisit di README (sudah ada) dan tidak dipakai
-  untuk index service berbayar yang membawa API key.
-- **`preflight` memakai `threads * 2` worker** → burst 100 socket; batasi ke angka
-  absolut (mis. 64) agar tidak membentur limit file descriptor di Windows.
-- **CI + linter.** `tests/` sekarang berisi 60 test (unittest murni, tanpa dependency),
-  jalankan `python -m unittest discover -s tests`. Tambahkan GitHub Actions matrix
-  3.10–3.13 + `ruff check` (opsional sebagai dev-dependency, runtime tetap zero-dep).
+Tiga jalur dulu membangun header dan kebijakannya sendiri:
+
+| | Sebelum | Sesudah |
+|---|---|---|
+| Header | `submit_one` mengirim Referer + Accept-Language, `submit_batch` tidak; `check_url` punya set sendiri | `_headers()` + `_request()` — satu set untuk ketiganya |
+| Transport batch | `submit_batch` memanggil `_urlopen` langsung | lewat `_fetch()` seperti `submit_one`, jadi `--pool` dan timeout ikut berlaku |
+| UA di pooled client | selalu `user_agents[0]` (rotasi diabaikan) | header yang sama dengan jalur urllib |
+| Timeout/TLS | urllib vs `http.client` dengan aturan sendiri | kebijakan yang sama: connect/read terpisah, verify-first lalu fallback per host |
+
+Dua transport tetap ada (urllib untuk default, `PooledHttpClient` opt-in untuk
+keep-alive), tetapi keduanya sekarang menerima **header, timeout, dan kebijakan TLS
+yang sama** dari satu tempat — perbedaan diam-diam antar-jalur itulah sumber bug yang
+dihapus di sini.
+
+### 7.2 `random_delay` default disamakan dengan config.ini
+
+`Settings.random_delay` dulu `True` padahal `config.ini` menulis `random delay = 0`
+dan pengukuran menunjukkan tidak ada manfaat. Sekarang default-nya `False`; API call
+seperti `Indexer(Settings())` tidak lagi tidur 10–80 ms per request tanpa alasan.
+
+### 7.3 Index service berbayar selalu memverifikasi sertifikat
+
+Fallback tanpa verifikasi di `engine._urlopen` hanya untuk host ping dengan rantai
+rusak. `IndexService.submit()` — yang mengirim **API key** — sekarang memakai
+`tls_context(True)` secara eksplisit, dan test menegaskan `CERT_REQUIRED` dan
+`check_hostname=True`, bukan sekadar "kebetulan default urllib".
+
+### 7.4 Burst preflight dibatasi
+
+`preflight` memakai `threads * 2` worker (100 socket pada default 50 thread).
+Sekarang `MAX_PREFLIGHT_WORKERS = 64`, dan tetap `2 × threads` untuk run kecil
+(4 thread → 8 worker).
+
+### 7.5 CI + linter (dan satu bug yang tertangkap)
+
+`.github/workflows/ci.yml`: matrix Python 3.10–3.13, `pip install -e .`, `ruff check .`,
+`unittest discover`, dan smoke test CLI. Ruff dikonfigurasi di `pyproject.toml`
+(`select = ["E4", "E7", "E9", "F"]`, dev extra, runtime tetap zero-dependency).
+
+Pada pembersihan awal, ruff menemukan **bug nyata**: `emulator.do_GET` memakai variabel
+`path` yang hanya didefinisikan di `do_POST` (F821), sehingga GET halaman root melempar
+`NameError` begitu daftar service kosong. Sudah diperbaiki dan dikunci oleh
+`tests/test_emulator.py` (2 test).
+
+### Verifikasi P3
+
+```bash
+pip install -e ".[dev]"          # dev extra: ruff
+ruff check .                     # All checks passed!
+python -m unittest discover -s tests -v   # 71 test
+python -m gsa_seo_indexer.cli --version
+```
+
+- `SharedRequestShapeTest` — `submit_one` dan `submit_batch` mengirim header identik,
+  `check_url` mempertahankan Accept yang lebih sempit, pooled client menerima header
+  yang sama (termasuk UA hasil rotasi).
+- `PreflightWorkerCapTest`, `SettingsDefaultsTest` — cap worker dan default delay.
+- `ServiceTlsTest` — context verifikasi dipatok + API key terkirim.
+- `EmulatorRootPageTest` — halaman root emulator tanpa service.
 
 ---
 
-## 8. Yang sudah dikerjakan di branch ini
+## 8. Ide berikutnya (opsional, belum dikerjakan)
+
+- **Gzip + baca body bertahap.** Body dibaca sampai 200 kB hanya untuk mencari satu
+  substring; `Accept-Encoding: gzip` + berhenti membaca begitu target ditemukan bisa
+  memotong byte di jaringan. Hanya menolong halaman "hit", jadi ukur dulu.
+- **Backoff/`Retry-After` untuk 429/503.** Sekarang respons itu langsung menandai
+  proxy gagal; belum ada penjadwalan ulang per host.
+- **Transport asyncio** untuk run 10.000+ target: satu thread event loop bisa
+  menggantikan 50 thread, dengan memori jauh lebih kecil. Ini penulisan ulang jalur
+  inti, bukan optimasi kecil.
+- **Publikasi PyPI** + workflow rilis dari tag.
+
+---
+
+## 9. Yang sudah dikerjakan di branch ini
 
 | File | Perubahan |
 |---|---|
@@ -335,14 +391,27 @@ python -m unittest discover -s tests -v     # 60 test
 | `gsa_seo_indexer/perf.py` | `DnsCache`: prune + `max_entries`, error tanpa objek exception, deaktivasi aman (P2 #2) |
 | `gsa_seo_indexer/engine.py` | `_ConnectTimeout*Connection/Handler`: connect timeout sungguhan (P2 #3) |
 | `gsa_seo_indexer/cli.py` | `resolve_timeouts()`: `--timeout` mengisi read dan membatasi connect |
-| `tests/test_engine.py` | 40 test: P0/P1 + connect timeout, read timeout per request |
+| `gsa_seo_indexer/engine.py` | `_headers()`/`_request()`: satu bentuk request untuk submit_one, submit_batch, check_url (P3 #1) |
+| `gsa_seo_indexer/engine.py` | `submit_batch` lewat `_fetch` (pool + timeout berlaku); pooled client menerima header yang sama |
+| `gsa_seo_indexer/engine.py` | `random_delay` default `False`, `MAX_PREFLIGHT_WORKERS = 64` (P3 #2/#4) |
+| `gsa_seo_indexer/services.py` | `submit()` memakai `tls_context(True)` — API key tidak pernah lewat koneksi tanpa verifikasi (P3 #3) |
+| `gsa_seo_indexer/emulator.py` | `do_GET` mendefinisikan `path` (F821 yang ditemukan ruff) |
+| `.github/workflows/ci.yml`, `pyproject.toml` | CI matrix 3.10–3.13, `ruff check`, dev extra (P3 #5) |
+| `tests/test_engine.py` | 47 test: P0/P1/P2 + bentuk request, cap preflight, default delay |
 | `tests/test_gui_rows.py` | 3 test: cap baris tabel GUI (dengan stub tkinter) |
 | `tests/test_perf_cache.py` | 12 test: streak host, prune/batas DNS, aktivasi cache |
+| `tests/test_services.py` | 2 test: TLS verifikasi untuk index service + API key |
+| `tests/test_emulator.py` | 2 test: halaman root emulator tanpa service |
 | `tests/test_cli_timeouts.py` | 5 test: pemetaan opsi timeout CLI |
 
-## 9. Cara mengukur ulang
+## 10. Cara mengukur ulang
 
 ```bash
+# apa yang dijalankan CI (matrix 3.10-3.13)
+pip install -e ".[dev]"
+ruff check .
+python -m unittest discover -s tests -v
+
 # 400 request lewat 16 thread, server lokal tanpa latensi
 python tools/bench_local.py 400 16
 
