@@ -58,7 +58,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout",
         type=float,
         default=None,
-        help="per-request timeout (5s is the measured sweet spot; default: config.ini)",
+        help="per-request read timeout, and an upper bound for the connect "
+        "phase (5s is the measured sweet spot; default: config.ini)",
     )
     s.add_argument("--delay", type=float, default=None, help="fixed delay after each request")
     s.add_argument(
@@ -289,6 +290,26 @@ def collect_urls(args) -> list[str]:
     return out
 
 
+def resolve_timeouts(
+    cli_timeout: float | None,
+    cli_connect: float | None,
+    cli_read: float | None,
+    settings,
+) -> tuple[float, float]:
+    """Combine ``--timeout`` / ``--connect-timeout`` / ``--read-timeout``.
+
+    ``--timeout`` is the original single knob.  It now sets the read phase and
+    acts as an upper bound on the connect phase, so ``--timeout 3`` really
+    cannot spend 4 s connecting to a dead host.  Returns ``(connect, read)``.
+    """
+    connect = cli_connect if cli_connect is not None else settings.connect_timeout
+    read = cli_read if cli_read is not None else settings.read_timeout
+    if cli_timeout is not None:
+        read = cli_timeout
+        connect = min(connect, cli_timeout)
+    return connect, read
+
+
 def cmd_submit(args) -> int:
     urls = collect_urls(args)
     if not urls:
@@ -400,9 +421,14 @@ def cmd_submit(args) -> int:
             proxy_list = []
             use_proxy = False
 
+    request_timeout = opt(args.timeout, cfg.timeout)
+    connect_timeout, read_timeout = resolve_timeouts(
+        args.timeout, args.connect_timeout, args.read_timeout, cfg
+    )
+
     settings = Settings(
         threads=threads,
-        timeout=opt(args.timeout, cfg.timeout),
+        timeout=request_timeout,
         delay=opt(args.delay, cfg.delay),
         use_proxy=use_proxy,
         proxy_list=proxy_list,
@@ -412,8 +438,8 @@ def cmd_submit(args) -> int:
         report_with_link_type=bool(opt(args.with_link_type, cfg.report_with_link_type)),
         follow_redirects=not opt(args.no_redirects, not cfg.follow_redirects),
         max_sites=max_sites,
-        connect_timeout=opt(args.connect_timeout, cfg.connect_timeout),
-        read_timeout=opt(args.read_timeout, cfg.read_timeout),
+        connect_timeout=connect_timeout,
+        read_timeout=read_timeout,
         skip_dead_hosts=not opt(args.no_skip_dead, not cfg.skip_dead_hosts),
         preflight=bool(opt(args.preflight, cfg.preflight)),
         reuse_connections=bool(opt(args.pool, cfg.reuse_connections)),

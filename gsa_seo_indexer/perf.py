@@ -49,6 +49,10 @@ class HostState:
     successes: int = 0
     last_error: str = ""
     avg_ms: float = 0.0
+    # Failures since the last success.  A host that answered once and then
+    # died used to be retried forever (alive stayed True); a short streak is
+    # enough evidence to write it off for ``dead_ttl``.
+    consecutive_failures: int = 0
 
     @property
     def score(self) -> float:
@@ -69,10 +73,20 @@ class HostCache:
     domains.
     """
 
-    def __init__(self, dead_ttl: float = DEAD_TTL, alive_ttl: float = ALIVE_TTL, min_failures: int = 1) -> None:
+    def __init__(
+        self,
+        dead_ttl: float = DEAD_TTL,
+        alive_ttl: float = ALIVE_TTL,
+        min_failures: int = 1,
+        max_consecutive_failures: int = 2,
+    ) -> None:
         self.dead_ttl = dead_ttl
         self.alive_ttl = alive_ttl
         self.min_failures = min_failures
+        # A host that has never answered is written off after the first
+        # failure; a host that has answered before gets a second chance, so a
+        # transient hiccup does not retire it, but a host that died stays dead.
+        self.max_consecutive_failures = max(1, max_consecutive_failures)
         self._state: dict[str, HostState] = {}
         self._lock = threading.Lock()
 
@@ -86,6 +100,7 @@ class HostCache:
             st = self._state.setdefault(host, HostState())
             st.successes += 1
             st.alive = True
+            st.consecutive_failures = 0
             st.checked = time.time()
             st.last_error = ""
             if elapsed_ms:
@@ -95,10 +110,13 @@ class HostCache:
         with self._lock:
             st = self._state.setdefault(host, HostState())
             st.failures += 1
+            st.consecutive_failures += 1
             st.checked = time.time()
             st.last_error = error[:120]
-            # a host that worked before is not written off after one hiccup
-            if st.successes == 0:
+            # Never answered -> dead after one try.  Answered before -> dead
+            # after a short streak, so a single hiccup is tolerated but a host
+            # that has actually gone away stops costing a timeout per URL.
+            if st.successes == 0 or st.consecutive_failures >= self.max_consecutive_failures:
                 st.alive = False
 
     def is_dead(self, host: str) -> bool:
@@ -138,11 +156,16 @@ class HostCache:
         """
         with self._lock:
             dead = {
-                host: {"checked": st.checked, "failures": st.failures, "last_error": st.last_error}
+                host: {
+                    "checked": st.checked,
+                    "failures": st.failures,
+                    "consecutive": st.consecutive_failures,
+                    "last_error": st.last_error,
+                }
                 for host, st in self._state.items()
                 if not st.alive
             }
-        payload = {"version": 1, "saved": time.time(), "dead": dead}
+        payload = {"version": 2, "saved": time.time(), "dead": dead}
         tmp = f"{path}.tmp"
         try:
             with open(tmp, "w", encoding="utf-8") as fh:
@@ -176,6 +199,9 @@ class HostCache:
                 try:
                     checked = float(rec.get("checked", 0.0))
                     failures = int(rec.get("failures", 1))
+                    # version 1 files have no streak: the failure count is
+                    # the best available approximation.
+                    consecutive = int(rec.get("consecutive", failures))
                 except (TypeError, ValueError):
                     continue
                 if now - checked >= self.dead_ttl:
@@ -187,6 +213,7 @@ class HostCache:
                     alive=False,
                     checked=checked,
                     failures=max(1, failures),
+                    consecutive_failures=max(1, consecutive),
                     last_error=str(rec.get("last_error", ""))[:120],
                 )
                 kept += 1
@@ -212,18 +239,70 @@ class DnsCache:
     run.
     """
 
-    def __init__(self, ttl: float = 300.0, negative_ttl: float = 30.0) -> None:
+    def __init__(
+        self,
+        ttl: float = 300.0,
+        negative_ttl: float = 30.0,
+        max_entries: int = 10_000,
+    ) -> None:
         self.ttl = ttl
         self.negative_ttl = negative_ttl
+        # A run touches ~12k hosts and a long-lived Indexer keeps resolving
+        # across runs, so the table needs a ceiling and a way to shed entries.
+        self.max_entries = max(64, max_entries)
         self._entries: dict[tuple[Any, ...], "_DnsEntry"] = {}
         self._lock = threading.Lock()
         self.hits = 0
         self.misses = 0
+        self.evictions = 0
+        self._prune_at = self.max_entries
+        self._calls = 0
+
+    # -- housekeeping -----------------------------------------------------
+    def prune(self, now: float | None = None) -> int:
+        """Drop expired entries (and the oldest ones past ``max_entries``).
+
+        Only entries that have finished resolving are eligible, so pruning can
+        never orphan a thread that is waiting on an in-flight lookup.  Returns
+        the number of entries removed.
+        """
+        now = time.monotonic() if now is None else now
+        removed = 0
+        with self._lock:
+            expired = [
+                key
+                for key, entry in self._entries.items()
+                if entry.resolved.is_set() and entry.expires <= now
+            ]
+            for key in expired:
+                del self._entries[key]
+            removed += len(expired)
+            # Leave room for the entry the caller is about to insert, so
+            # ``max_entries`` is a real ceiling rather than "ceiling + 1".
+            overflow = len(self._entries) - (self.max_entries - 1)
+            if overflow > 0:
+                # Drop the answers that are closest to expiring anyway.
+                ready = sorted(
+                    (entry.expires, key)
+                    for key, entry in self._entries.items()
+                    if entry.resolved.is_set()
+                )
+                for _expires, key in ready[:overflow]:
+                    del self._entries[key]
+                    removed += 1
+            self.evictions += removed
+        return removed
 
     def lookup(self, host, port, family, type_, proto, flags):
         """Resolve with memoisation; raises exactly like ``getaddrinfo``."""
         key = (host, port, family, type_, proto, flags)
         now = time.monotonic()
+        self._calls += 1
+        # Amortised housekeeping: every 512 lookups, or as soon as the table
+        # is over its ceiling, expired answers are dropped.
+        if self._calls >= self._prune_at or len(self._entries) > self.max_entries:
+            self._prune_at = self._calls + 512
+            self.prune(now)
         with self._lock:
             entry = self._entries.get(key)
             if entry is not None and entry.resolved.is_set() and entry.expires > now:
@@ -241,7 +320,11 @@ class DnsCache:
                 value = _orig_getaddrinfo(host, port, family, type_, proto, flags)
             except BaseException as exc:  # noqa: BLE001
                 with self._lock:
-                    entry.error = exc
+                    # Store type + message rather than the exception: an
+                    # exception object keeps its traceback (and every frame in
+                    # it) alive for the whole negative TTL.
+                    entry.error_type = type(exc)
+                    entry.error_msg = str(exc)
                     entry.expires = time.monotonic() + self.negative_ttl
                     entry.resolved.set()
                 raise
@@ -262,7 +345,12 @@ class DnsCache:
 
     def stats(self) -> dict[str, int]:
         with self._lock:
-            return {"entries": len(self._entries), "hits": self.hits, "misses": self.misses}
+            return {
+                "entries": len(self._entries),
+                "hits": self.hits,
+                "misses": self.misses,
+                "evictions": self.evictions,
+            }
 
 
 @dataclass
@@ -270,13 +358,18 @@ class _DnsEntry:
     """One memoised resolution, shared between concurrent lookups."""
 
     value: Any = None
-    error: BaseException | None = None
+    error_type: type[BaseException] | None = None
+    error_msg: str = ""
     expires: float = 0.0
     resolved: threading.Event = field(default_factory=threading.Event)
 
     def raise_or_return(self):
-        if self.error is not None:
-            raise self.error
+        if self.error_type is not None:
+            try:
+                error = self.error_type(self.error_msg)
+            except Exception:  # noqa: BLE001 - exotic exception signatures
+                error = OSError(self.error_msg)
+            raise error
         return self.value
 
 
@@ -307,9 +400,16 @@ def activate_dns_cache(cache: DnsCache) -> None:
     _active_dns = cache
 
 
-def deactivate_dns_cache() -> None:
+def deactivate_dns_cache(cache: DnsCache | None = None) -> None:
+    """Stop routing resolutions through a cache.
+
+    With ``cache`` given, the cache is only deactivated when it is still the
+    active one: two ``Indexer`` instances share the process-wide hook, and the
+    one that finishes first must not switch the resolver off under the other.
+    """
     global _active_dns
-    _active_dns = None
+    if cache is None or _active_dns is cache:
+        _active_dns = None
 
 
 def host_of(url: str) -> str:

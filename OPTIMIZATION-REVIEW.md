@@ -22,9 +22,9 @@ memakai TLS sama sekali. Itu plafon throughput yang sebenarnya, bukan latensi se
 | **P1** | Tabel GUI menyimpan **semua** baris (333.800 baris untuk 50 URL × 6.676 host) | tabel dibatasi 5.000 baris + penghitung sisanya | ✅ **tuntas** |
 | **P1** | `pool.map()` = head-of-line blocking untuk `on_result()` | 1 request lambat tidak lagi menahan 5 request lain | ✅ **tuntas** |
 | **P1** | `report_format = json` menyalin seluruh hasil ke list baru | peak 28 MB → **0,3 MB** (100k baris) | ✅ **tuntas** |
-| **P2** | Host yang pernah sukses **tidak pernah** ditandai mati | host yang mati setelah sukses tetap dibayar timeout-nya di setiap URL | ⬜ belum |
-| **P2** | `DnsCache._entries` tidak pernah dipangkas / menyimpan objek exception | memori tumbuh antar-run; traceback ikut tersimpan | ⬜ belum |
-| **P2** | `connect timeout` tidak berpengaruh di jalur default (urllib hanya menerima satu timeout) | timeout koneksi 4 s vs read 5 s tidak dibedakan | ⬜ belum |
+| **P2** | Host yang pernah sukses **tidak pernah** ditandai mati | 5.000 URL: 5.000 request sia-sia → **2** | ✅ **tuntas** |
+| **P2** | `DnsCache._entries` tidak pernah dipangkas / menyimpan objek exception | 20.000 host → tabel dibatasi **10.000** entri; exception tidak disimpan | ✅ **tuntas** |
+| **P2** | `connect timeout` tidak berpengaruh di jalur default (urllib hanya menerima satu timeout) | host mati: **5,03 s → 4,00 s** (atau 1,00 s dengan `--timeout 1`) | ✅ **tuntas** |
 | **P2** | Tidak ada test, CI, atau linter (6.300 LOC, 0 test) | regresi performa/correctness tidak terdeteksi | 🟡 sebagian (39 test + benchmark) |
 | **P3** | Tiga jalur HTTP paralel (`submit_one`, `submit_batch`, `PooledHttpClient`) | perilaku (timeout, redirect, verify) mudah menyimpang | ⬜ belum |
 | **P3** | `Settings.random_delay = True`, padahal `config.ini` menulis `0` dan dokumentasi bilang "tidak ada manfaat" | sleep 10–80 ms di dalam worker untuk API call langsung | ⬜ belum |
@@ -214,40 +214,84 @@ python -m unittest discover -s tests -v     # 39 test
 
 ---
 
-## 6. Yang masih dibutuhkan (roadmap)
+## 6. P2 — selesai (dan dampak terukurnya)
 
-### P2 — correctness jangka panjang
+### 6.1 Host yang sukses lalu mati akhirnya dianggap mati
 
-**6.1 Host yang pernah sukses tidak pernah dianggap mati** (`perf.py:94`)
-`record_failure()` hanya menandai `alive = False` bila `successes == 0`. Host yang
-sukses sekali lalu mati akan dibayar timeout-nya di setiap URL berikutnya. Tambahkan
-ambang "gagal berturut-turut" (mis. 2–3) sebelum menandai mati, atau decay skor.
+`HostCache.record_failure()` dulu hanya menandai `alive = False` bila
+`successes == 0`, jadi host yang pernah menjawab sekali tetapi kemudian mati
+tetap dicoba **di setiap URL** selama run. Sekarang ada hitungan gagal
+**berturut-turut** (`HostState.consecutive_failures`, ambang 2):
 
-**6.2 `DnsCache` tumbuh tanpa batas** (`perf.py:218`)
-Entri tidak pernah dipangkas dan menyimpan objek exception (traceback ikut hidup).
-Pangkas entri kedaluwarsa secara periodik (mis. saat `len > 4096`) dan simpan
-`(type, str)` bukan instance exception. Catatan: cache ini mem-patch
-`socket.getaddrinfo` **seluruh proses** dan hanya mendukung satu cache aktif —
-dua `Indexer` bersamaan akan saling menimpa.
+- host yang belum pernah menjawab → mati setelah 1 kegagalan (perilaku lama,
+  supaya daftar legacy yang mayoritas mati tidak jadi dua kali lebih lambat);
+- host yang pernah menjawab → toleran satu hiccup, mati setelah 2 kegagalan
+  berturut-turut, dan **streak-nya ikut tersimpan** di `host_cache.json`
+  (format v2; file v1 tetap terbaca).
 
-**6.3 `connect timeout` tidak berlaku di jalur default**
-`_timeout()` mengembalikan `max(connect_timeout, read_timeout)` dan urllib hanya
-menerima satu timeout, jadi `connect timeout = 4` tidak pernah dipakai; hanya
-`PooledHttpClient` yang membedakannya. Pilih salah satu: pakai pooled client sebagai
-default (dengan perbaikan 6.4), atau hapus opsi dari config agar tidak menyesatkan.
+| 1 host yang mati setelah sukses | Request sia-sia |
+|---|---|
+| Sebelum, 50 / 500 / 5.000 URL | 50 / 500 / **5.000** |
+| Sesudah | **2 / 2 / 2** |
 
-**6.4 Connection pool: default `off` itu keputusan yang benar — untuk beban ini**
-`reuse_connections` mati secara default, dan itu wajar: setiap host hanya dikunjungi
-1–2 kali per run, sehingga keep-alive hampir tidak pernah terpakai (dan 96 koneksi
-terbuka malah membatasi host yang bisa dikerjakan bersamaan). Jangan "optimalkan"
-dengan menyalakannya; kalau mau, pakai hanya saat `len(urls) >= 10` **dan** thread
-lebih sedikit dari jumlah host, lalu ukur ulang.
+Diverifikasi end-to-end: run pertama menyimpan host mati ke `host_cache.json`,
+proses berikutnya memulihkannya (`restored_dead: 1`) dan melewatinya
+(`skipped_dead: 1`), sementara host hidup tetap dikirimi.
 
-**6.5 Gzip + baca body lebih pendek**
-Body dibaca sampai 200 kB (`max_body_bytes`) untuk sekadar mencari satu substring.
-Dua kandidat: kirim `Accept-Encoding: gzip` dan dekompres (mengurangi byte di jaringan),
-atau baca bertahap dan berhenti begitu target ditemukan. Yang kedua hanya menolong
-halaman "hit"; mayoritas adalah miss, jadi ukur dulu sebelum dikerjakan.
+### 6.2 DNS cache: dibatasi, dipangkas, tanpa objek exception
+
+- `DnsCache.prune()` membuang entri kedaluwarsa dan memangkas kelebihan ke
+  `max_entries` (default 10.000). Pemangkasan berjalan otomatis tiap 512 lookup
+  atau begitu tabel melewati batas, dan hanya menyentuh entri yang sudah selesai
+  resolve sehingga thread yang sedang menunggu tidak kehilangan jawabannya.
+- Kegagalan disimpan sebagai **tipe + pesan**, bukan objek exception: objek
+  exception memegang traceback (dan semua frame di dalamnya) selama TTL negatif.
+- `deactivate_dns_cache(cache)` hanya mematikan cache yang **masih aktif**, jadi
+  `Indexer` yang selesai lebih dulu tidak mematikan resolver milik `Indexer` lain
+  di proses yang sama.
+
+```
+20.000 host unik -> {'entries': 10000, 'evictions': 10000}
+```
+
+### 6.3 `connect timeout` akhirnya benar-benar dipakai
+
+urllib menerima satu timeout untuk seluruh request (connect + TLS + read), dan
+kode lama mengisinya dengan `max(connect_timeout, read_timeout)` — sehingga
+`connect timeout = 4` tidak pernah berarti 4 detik. Sekarang ada
+`_ConnectTimeoutHTTPConnection` / `_ConnectTimeoutHTTPSConnection` yang hanya
+menukar timeout selama `connect()` (termasuk handshake TLS), lalu
+mengembalikannya untuk fase baca. `--timeout` tetap menjadi knob tunggal:
+ia mengisi fase baca **dan** menjadi batas atas fase connect.
+
+| Host blackhole `10.255.255.1:81` | Waktu |
+|---|---|
+| Sebelum (satu timeout = max(4, 5)) | 5,03 s |
+| Sesudah (connect 4 s / read 5 s) | **4,00 s** |
+| Sesudah + `--timeout 1` | **1,00 s** |
+
+Pada daftar legacy yang sebagian besar mati, 20% penghematan waktu tunggu per
+host mati itu langsung terasa; yang lebih penting, opsinya kini tidak menipu.
+
+### Verifikasi P2
+
+```bash
+python -m unittest discover -s tests -v     # 60 test
+```
+
+- `HostFailureStreakTest` — mati setelah 1 kegagalan (belum pernah sukses),
+  toleran satu hiccup (pernah sukses), streak di-reset oleh sukses, persistensi
+  v2, kompatibilitas file v1, dan TTL yang membuat host dicoba lagi.
+- `DnsCacheTest` — memoise, prune entri kedaluwarsa, batas `max_entries`,
+  kegagalan menyimpan tipe+pesan (tanpa objek exception), TTL negatif, dan
+  aktivasi yang tidak saling menimpa.
+- `ConnectTimeoutTest` + `ResolveTimeoutsTest` — timeout ditukar lalu
+  dikembalikan, opener memakai handler baru, request memakai `read_timeout`,
+  dan pemetaan `--timeout` / `--connect-timeout` / `--read-timeout`.
+
+---
+
+## 7. Yang masih dibutuhkan (roadmap)
 
 ### P3 — kebersihan arsitektur
 
@@ -265,13 +309,13 @@ halaman "hit"; mayoritas adalah miss, jadi ukur dulu sebelum dikerjakan.
   untuk index service berbayar yang membawa API key.
 - **`preflight` memakai `threads * 2` worker** → burst 100 socket; batasi ke angka
   absolut (mis. 64) agar tidak membentur limit file descriptor di Windows.
-- **CI + linter.** `tests/` sekarang berisi 39 test (unittest murni, tanpa dependency),
+- **CI + linter.** `tests/` sekarang berisi 60 test (unittest murni, tanpa dependency),
   jalankan `python -m unittest discover -s tests`. Tambahkan GitHub Actions matrix
   3.10–3.13 + `ruff check` (opsional sebagai dev-dependency, runtime tetap zero-dep).
 
 ---
 
-## 7. Yang sudah dikerjakan di branch ini
+## 8. Yang sudah dikerjakan di branch ini
 
 | File | Perubahan |
 |---|---|
@@ -287,10 +331,16 @@ halaman "hit"; mayoritas adalah miss, jadi ukur dulu sebelum dikerjakan.
 | `gsa_seo_indexer/gui.py` | `MAX_TREE_ROWS = 5_000`: tabel dibatasi, sisa baris dihitung (P1 #2) |
 | `gsa_seo_indexer/engine.py` | `as_completed()` + `cancel()`: tidak ada head-of-line blocking (P1 #3) |
 | `gsa_seo_indexer/engine.py` | laporan JSON streaming + `Result(slots=True)` (P1 #4) |
-| `tests/test_engine.py` | 36 test: P0 + `check_urls`, urutan pengiriman, jendela kerja, laporan |
+| `gsa_seo_indexer/perf.py` | `HostCache`: ambang gagal berturut-turut + persistensi v2 (P2 #1) |
+| `gsa_seo_indexer/perf.py` | `DnsCache`: prune + `max_entries`, error tanpa objek exception, deaktivasi aman (P2 #2) |
+| `gsa_seo_indexer/engine.py` | `_ConnectTimeout*Connection/Handler`: connect timeout sungguhan (P2 #3) |
+| `gsa_seo_indexer/cli.py` | `resolve_timeouts()`: `--timeout` mengisi read dan membatasi connect |
+| `tests/test_engine.py` | 40 test: P0/P1 + connect timeout, read timeout per request |
 | `tests/test_gui_rows.py` | 3 test: cap baris tabel GUI (dengan stub tkinter) |
+| `tests/test_perf_cache.py` | 12 test: streak host, prune/batas DNS, aktivasi cache |
+| `tests/test_cli_timeouts.py` | 5 test: pemetaan opsi timeout CLI |
 
-## 8. Cara mengukur ulang
+## 9. Cara mengukur ulang
 
 ```bash
 # 400 request lewat 16 thread, server lokal tanpa latensi
@@ -302,8 +352,11 @@ python tools/bench_local.py 400 1
 # test regresi (tanpa dependency tambahan)
 python -m unittest discover -s tests -v
 
-# hanya test cap baris GUI (jalan juga tanpa tkinter, memakai stub)
-python -m unittest tests.test_gui_rows -v
+# per modul
+python -m unittest tests.test_engine -v       # engine + transport
+python -m unittest tests.test_perf_cache -v   # host cache + DNS cache
+python -m unittest tests.test_gui_rows -v     # cap tabel GUI (stub tkinter)
+python -m unittest tests.test_cli_timeouts -v # pemetaan opsi timeout
 ```
 
 Untuk mengukur dampak di jaringan nyata, jalankan run yang sama dua kali dengan build

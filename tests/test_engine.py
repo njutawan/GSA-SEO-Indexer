@@ -514,3 +514,101 @@ class BoundedWorkWindowTest(unittest.TestCase):
         self.assertFalse(worker.is_alive(), "run() must return after stop()")
         self.assertLess(elapsed, 2.0, "in-flight requests may finish, the queue may not")
         self.assertLess(len(calls), len(targets))
+
+
+# --------------------------------------------------------------------------
+# P2 — the connect phase has its own timeout again
+# --------------------------------------------------------------------------
+class ConnectTimeoutTest(unittest.TestCase):
+    def test_http_connection_switches_and_restores_the_timeout(self) -> None:
+        import http.client
+
+        conn = engine._ConnectTimeoutHTTPConnection(
+            "127.0.0.1", 9, timeout=5.0, connect_timeout=2.5
+        )
+        seen: dict[str, float] = {}
+
+        def fake_connect(self):
+            seen["timeout"] = self.timeout
+
+        with mock.patch.object(http.client.HTTPConnection, "connect", fake_connect):
+            conn.connect()
+
+        self.assertEqual(seen["timeout"], 2.5, "connect must use connect_timeout")
+        self.assertEqual(conn.timeout, 5.0, "read phase must keep read_timeout")
+
+    def test_https_connection_switches_and_restores_the_timeout(self) -> None:
+        import http.client
+
+        conn = engine._ConnectTimeoutHTTPSConnection(
+            "127.0.0.1", 443, timeout=7.0, connect_timeout=3.0
+        )
+        seen: dict[str, float] = {}
+
+        def fake_connect(self):
+            seen["timeout"] = self.timeout
+
+        with mock.patch.object(http.client.HTTPSConnection, "connect", fake_connect):
+            conn.connect()
+
+        self.assertEqual(seen["timeout"], 3.0)
+        self.assertEqual(conn.timeout, 7.0)
+
+    def test_opener_installs_the_timeout_aware_handlers(self) -> None:
+        indexer = Indexer(
+            Settings(
+                connect_timeout=2.0,
+                read_timeout=7.0,
+                persist_host_cache=False,
+            )
+        )
+        opener = indexer._opener(None)
+        https = [
+            h for h in opener.handlers
+            if isinstance(h, engine._ConnectTimeoutHTTPSHandler)
+        ]
+        http_handlers = [
+            h for h in opener.handlers
+            if isinstance(h, engine._ConnectTimeoutHTTPHandler)
+        ]
+        self.assertEqual(len(https), 1)
+        self.assertEqual(len(http_handlers), 1)
+        self.assertEqual(https[0]._connect_timeout, 2.0)
+        self.assertEqual(indexer._timeout(), 7.0)
+
+    def test_a_submission_uses_the_read_timeout(self) -> None:
+        captured: dict[str, float] = {}
+
+        class _Response:
+            status = 200
+
+            def read(self, _limit=None):
+                return b'<html><a href="http://t.example/">t</a></html>'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc):
+                return False
+
+        indexer = Indexer(
+            Settings(
+                connect_timeout=2.0,
+                read_timeout=7.0,
+                persist_host_cache=False,
+                dns_cache=False,
+                random_delay=False,
+                skip_dead_hosts=False,
+            )
+        )
+
+        def fake_urlopen(_req, _proxy, timeout):
+            captured["timeout"] = timeout
+            return _Response()
+
+        target = PingTarget(url="http://s.example/?url=", mode="query")
+        with mock.patch.object(indexer, "_urlopen", fake_urlopen):
+            result = indexer.submit_one(target, "http://t.example/")
+
+        self.assertEqual(result.status, "submitted")
+        self.assertEqual(captured["timeout"], 7.0)

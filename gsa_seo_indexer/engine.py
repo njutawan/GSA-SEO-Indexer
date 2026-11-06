@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import concurrent.futures
 import csv
+import functools
+import http.client
 import json
 import os
 import queue
@@ -535,8 +537,10 @@ class Indexer:
         bundle and used to happen once per request (see ``_ssl_context``).
         """
         ctx = _ssl_context(verify)
+        connect_timeout = self.settings.connect_timeout or self.settings.timeout
         handlers: list[urllib.request.BaseHandler] = [
-            urllib.request.HTTPSHandler(context=ctx),
+            _ConnectTimeoutHTTPSHandler(connect_timeout, context=ctx),
+            _ConnectTimeoutHTTPHandler(connect_timeout),
         ]
         if proxy:
             handlers.append(urllib.request.ProxyHandler({"http": proxy, "https": proxy}))
@@ -588,7 +592,7 @@ class Indexer:
             method="GET",
         )
         try:
-            with self._urlopen(req, self._pick_proxy(), self.settings.timeout) as resp:
+            with self._urlopen(req, self._pick_proxy(), self._timeout()) as resp:
                 body = resp.read(120000).decode("utf-8", "replace").lower()
                 code = resp.status
         except urllib.error.HTTPError as exc:
@@ -712,8 +716,13 @@ class Indexer:
             return resp.read(self.settings.max_body_bytes).decode("utf-8", "replace"), resp.status
 
     def _timeout(self) -> float:
-        """The timeout used for a single request."""
-        return max(self.settings.connect_timeout, self.settings.read_timeout)
+        """Timeout for the read phase of a request.
+
+        The connect phase has its own timeout, applied by the connection
+        classes above; using ``max(connect, read)`` here (as this used to) is
+        what made the ``connect timeout`` setting a no-op.
+        """
+        return self.settings.read_timeout or self.settings.timeout
 
     def _http(self, proxy: str = "") -> PooledHttpClient:
         """The pooled HTTP client for a given proxy (created on first use).
@@ -748,7 +757,7 @@ class Indexer:
 
     def close(self) -> None:
         """Release the pooled connections and stop intercepting DNS."""
-        deactivate_dns_cache()
+        deactivate_dns_cache(self.dns)
         if self._client is not None:
             self._client.close()
             self._client = None
@@ -785,7 +794,7 @@ class Indexer:
             method="GET",
         )
         try:
-            with self._urlopen(req, self._pick_proxy(), self.settings.timeout) as resp:
+            with self._urlopen(req, self._pick_proxy(), self._timeout()) as resp:
                 body = resp.read(300000).decode("utf-8", "replace")
                 code = resp.status
             elapsed = int((time.perf_counter() - started) * 1000)
@@ -1219,6 +1228,81 @@ class Indexer:
                     else:
                         w.writerow([r.target, r.url, r.status, r.code, r.elapsed_ms, r.error])
         return path
+
+
+class _ConnectTimeoutHTTPConnection(http.client.HTTPConnection):
+    """``HTTPConnection`` with a separate timeout for the connect phase.
+
+    urllib passes one timeout to the whole request (connect + TLS + read), so
+    ``connect timeout`` in config.ini never applied to the default transport.
+    Applying it around ``connect()`` only lets a dead host fail in 4 s instead
+    of 5 s - which is most of the legacy list - while the read phase keeps its
+    own, longer timeout.
+    """
+
+    connect_timeout: float = 4.0
+
+    def __init__(self, *args, connect_timeout: float | None = None, **kwargs) -> None:
+        if connect_timeout is not None:
+            self.connect_timeout = float(connect_timeout)
+        super().__init__(*args, **kwargs)
+
+    def connect(self) -> None:
+        read_timeout = self.timeout
+        self.timeout = self.connect_timeout
+        try:
+            super().connect()
+        finally:
+            self.timeout = read_timeout
+
+
+class _ConnectTimeoutHTTPSConnection(http.client.HTTPSConnection):
+    """TLS variant; connect() covers the TCP connect *and* the handshake."""
+
+    connect_timeout: float = 4.0
+
+    def __init__(self, *args, connect_timeout: float | None = None, **kwargs) -> None:
+        if connect_timeout is not None:
+            self.connect_timeout = float(connect_timeout)
+        super().__init__(*args, **kwargs)
+
+    def connect(self) -> None:
+        read_timeout = self.timeout
+        self.timeout = self.connect_timeout
+        try:
+            super().connect()
+        finally:
+            self.timeout = read_timeout
+
+
+class _ConnectTimeoutHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, connect_timeout: float) -> None:
+        super().__init__()
+        self._connect_timeout = connect_timeout
+
+    def http_open(self, req):
+        return self.do_open(
+            functools.partial(
+                _ConnectTimeoutHTTPConnection, connect_timeout=self._connect_timeout
+            ),
+            req,
+        )
+
+
+class _ConnectTimeoutHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, connect_timeout: float, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._connect_timeout = connect_timeout
+
+    def https_open(self, req):
+        return self.do_open(
+            functools.partial(
+                _ConnectTimeoutHTTPSConnection, connect_timeout=self._connect_timeout
+            ),
+            req,
+            context=self._context,
+            check_hostname=self._check_hostname,
+        )
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
