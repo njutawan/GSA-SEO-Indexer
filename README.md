@@ -217,10 +217,12 @@ Flag penting: `--threads`, `--proxy`, `--proxy-file`, `--test-proxies`, `--repor
 - 🎛️ **config.ini** — key meniru config asli GSA, bisa baca `config.ini` GSA langsung
 - 🔐 **API key terpisah** — `keys.json`, tidak pernah ditulis ke laporan; index service
   berbayar **selalu** memverifikasi sertifikat TLS
-- 🧪 **100 test + CI** — `python -m unittest discover -s tests`, matrix Python 3.10–3.13
+- 🧪 **108 test + CI** — `python -m unittest discover -s tests`, matrix Python 3.10–3.13
   dan `ruff check` (dev-only; runtime tetap zero-dependency)
 - ⚡ **Index service paralel** — "Run enabled" mengirim ke 8 service sekaligus
   (48 service: 9,4 s → 1,2 s); CLI punya `services --run-enabled`
+- 📉 **Memori hasil berbatas** — run 400.000 baris: puncak **101 MB → 17 MB**; baris lama
+  tumpah ke file sementara, laporan tetap identik dan urutannya sama
 
 ---
 

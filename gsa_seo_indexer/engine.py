@@ -34,6 +34,7 @@ from .httpclient import (
     tls_context,
 )
 from .paths import resource_dir, runtime_dir
+from .resultstore import ResultStore
 from .perf import DnsCache, HostCache, activate_dns_cache, deactivate_dns_cache, host_of, port_of
 
 # A preflight probe is a bare TCP connect, so it is cheap and the pool used
@@ -213,6 +214,12 @@ class Settings:
     # default cache file next to config.ini.
     persist_host_cache: bool = True
     host_cache_path: str = ""
+    # Results used to pile up in one list for the whole run: 660k rows is
+    # ~115 MB, and the report is only written at the end.  Past this many rows
+    # the older ones spill to a temporary pickle file, so a big run costs a
+    # bounded amount of RAM and produces an identical report.  0 keeps
+    # everything in memory (the old behaviour).
+    max_results_in_memory: int = 20_000
     # DNS is 11% of the request time; an in-process cache stops the two
     # forms of one site (which share a host) from each paying a cold
     # resolve when their requests are in flight at the same time.
@@ -417,6 +424,10 @@ class RunStats:
     submitted: int = 0
     failed: int = 0
     skipped: int = 0
+    # Counted as the results arrive, so the summary no longer walks the whole
+    # result log (which may now be spilled to disk).
+    indexable: int = 0
+    listed: int = 0
     started: float = field(default_factory=time.time)
     last_result: Result | None = None
 
@@ -451,6 +462,33 @@ def _dump_row(result: "Result") -> str:
     return json.dumps(asdict(result), separators=(",", ":"))
 
 
+# Field order of ``Result`` (see the dataclass above), used to spill rows as
+# plain tuples: pickle is ~10x faster on tuples than on the objects and the
+# spill file is smaller.  ``_unpack_result`` rebuilds the dataclass, so the
+# store still hands out ``Result`` instances.
+_RESULT_FIELDS = (
+    "target", "url", "status", "code", "indexable", "listed", "elapsed_ms", "error",
+)
+
+
+def _pack_result(result: "Result") -> tuple:
+    # Explicit attributes: a getattr loop here costs 0.79 us/row, this 0.3 us.
+    return (
+        result.target,
+        result.url,
+        result.status,
+        result.code,
+        result.indexable,
+        result.listed,
+        result.elapsed_ms,
+        result.error,
+    )
+
+
+def _unpack_result(row: tuple) -> "Result":
+    return Result(*row)
+
+
 # --------------------------------------------------------------------------
 # The engine
 # --------------------------------------------------------------------------
@@ -460,7 +498,11 @@ class Indexer:
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self.stats = RunStats()
-        self.results: list[Result] = []
+        self.results = ResultStore(
+            max_memory=self.settings.max_results_in_memory,
+            pack=_pack_result,
+            unpack=_unpack_result,
+        )
         self._ua_pool = list(self.settings.user_agents) or DEFAULT_USER_AGENTS
         self._proxy_pool = list(self.settings.proxy_list)
         self._good_proxies = list(self.settings.proxy_list)
@@ -503,6 +545,8 @@ class Indexer:
         self._good_proxies = list(settings.proxy_list)
         self._retired = set()
         self.host_cache.dead_ttl = settings.dead_ttl
+        if hasattr(self.results, "max_memory"):
+            self.results.max_memory = max(0, settings.max_results_in_memory)
         # A new profile means new timeouts / redirect policy: the cached
         # openers embed both, so they must not survive the change.
         with self._openers_lock:
@@ -827,10 +871,12 @@ class Indexer:
         )
 
     def close(self) -> None:
-        """Release the pooled connections and stop intercepting DNS."""
+        """Release the pooled connections, the result spill file and DNS."""
         deactivate_dns_cache(self.dns)
         with self._openers_lock:
             self._openers.clear()
+        if hasattr(self.results, "close"):
+            self.results.close()
         if self._client is not None:
             self._client.close()
             self._client = None
@@ -937,7 +983,7 @@ class Indexer:
         if reset:
             self._stop.clear()
             self.stats = RunStats(total=len(urls) * len(targets))
-            self.results = []
+            self.results.clear()
             self.skipped_dead = 0
 
         if batch_size and batch_size > 1:
@@ -1017,6 +1063,10 @@ class Indexer:
                                     self.stats.skipped += 1
                                 else:
                                     self.stats.failed += 1
+                                if res.indexable:
+                                    self.stats.indexable += 1
+                                elif res.listed:
+                                    self.stats.listed += 1
                                 self.stats.last_result = res
                             if on_result:
                                 # notification only - the bookkeeping above is
@@ -1142,7 +1192,7 @@ class Indexer:
         keeps the speed-up without losing the links.
         """
         self._stop.clear()
-        self.results = []
+        self.results.clear()
         self.skipped_dead = 0
 
         primary = self._cap_targets(dedupe_by_host(targets))
@@ -1201,7 +1251,7 @@ class Indexer:
         target on the page with the second shape.
         """
         self._stop.clear()
-        self.results = []
+        self.results.clear()
         self.skipped_dead = 0
 
         primary = self._cap_targets(dedupe_by_host(targets))

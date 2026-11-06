@@ -522,8 +522,10 @@ def cmd_submit(args) -> int:
         print()
 
     s = indexer.stats
-    links = sum(1 for r in indexer.results if r.indexable)
-    listed = sum(1 for r in indexer.results if r.listed and not r.indexable)
+    # Counted while the run was in progress: the result log may now be spilled
+    # to disk, so a summary pass over it would be a disk read.
+    links = s.indexable
+    listed = s.listed
     print(f"Submitted  : {s.submitted}")
     print(f"Failed     : {s.failed}")
     print(f"Skipped    : {s.skipped}")

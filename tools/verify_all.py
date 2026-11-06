@@ -58,6 +58,7 @@ from gsa_seo_indexer.engine import (  # noqa: E402
 from gsa_seo_indexer.httpclient import tls_context  # noqa: E402
 from gsa_seo_indexer import engine as engine_mod  # noqa: E402
 from gsa_seo_indexer.perf import DnsCache, HostCache  # noqa: E402
+from gsa_seo_indexer.resultstore import ResultStore  # noqa: E402
 from gsa_seo_indexer.watcher import UrlWatcher  # noqa: E402
 
 HEADER_KEYS = ("user-agent", "accept", "accept-language", "referer")
@@ -595,13 +596,27 @@ def p3_emulator_root() -> tuple[str, bool]:
     )
 
 
-def p3_toolchain() -> tuple[str, bool]:
-    ruff = shutil.which("ruff") or (
-        "/tmp/lintenv/bin/ruff" if Path("/tmp/lintenv/bin/ruff").exists() else ""
+def _ruff_command() -> list[str]:
+    """Where ruff lives, if anywhere: PATH, ``$RUFF``, or ``python -m ruff``."""
+    for candidate in (
+        os.environ.get("RUFF", ""),
+        shutil.which("ruff") or "",
+        "/tmp/lintenv2/bin/ruff",
+        "/tmp/lintenv/bin/ruff",
+    ):
+        if candidate and Path(candidate).exists():
+            return [candidate]
+    probe = subprocess.run(
+        [sys.executable, "-m", "ruff", "--version"], capture_output=True, timeout=60
     )
+    return [sys.executable, "-m", "ruff"] if probe.returncode == 0 else []
+
+
+def p3_toolchain() -> tuple[str, bool]:
+    ruff = _ruff_command()
     if ruff:
         lint = subprocess.run(
-            [ruff, "check", "."], cwd=ROOT, capture_output=True, text=True, timeout=120
+            [*ruff, "check", "."], cwd=ROOT, capture_output=True, text=True, timeout=120
         )
         lint_txt = "ruff bersih" if lint.returncode == 0 else f"ruff {lint.stdout.strip()[:80]}"
         lint_ok = lint.returncode == 0
@@ -769,6 +784,65 @@ def p5_classifier() -> tuple[str, bool]:
     )
 
 
+# ---------------------------------------------------------------------------
+# P6 — result log: bounded memory, same rows
+# ---------------------------------------------------------------------------
+def p6_result_store() -> tuple[str, bool]:
+    rows_n = 400_000
+
+    def row(index: int) -> Result:
+        return Result(
+            target=f"http://example.com/{index % 1000}",
+            url=f"http://site.example/?u={index}",
+            status="submitted",
+            code=200,
+            indexable=(index % 7 == 0),
+            elapsed_ms=12,
+        )
+
+    # Baseline: perilaku lama, satu list menahan semua baris.
+    tracemalloc.start()
+    plain = [row(i) for i in range(rows_n)]
+    list_peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    del plain
+
+    with tempfile.TemporaryDirectory() as tmp:
+        store = ResultStore(max_memory=20_000, directory=tmp)
+        tracemalloc.start()
+        for index in range(50_000):
+            store.append(row(index))
+        peak_50k = tracemalloc.get_traced_memory()[1]
+        for index in range(50_000, rows_n):
+            store.append(row(index))
+        store_peak = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+        size = store.path.stat().st_size / 1e6
+        spills = store.spills
+        rows_back = list(store)
+        order_ok = (
+            len(rows_back) == rows_n
+            and rows_back[0].url.endswith("=0")
+            and rows_back[-1].url.endswith(f"={rows_n - 1}")
+            and all(a.url != b.url for a, b in zip(rows_back[:5], rows_back[1:5]))
+        )
+        del rows_back
+        path = store.path
+        store.close()
+        cleaned = not path.exists()
+
+    ratio = list_peak / store_peak if store_peak else 0
+    flat = store_peak < peak_50k * 1.3
+    ok = ratio >= 5 and flat and order_ok and cleaned and spills > 0
+    return (
+        f"{rows_n:,} baris: puncak {list_peak / 1e6:.0f} MB (list) vs {store_peak / 1e6:.0f} MB "
+        f"(store, {ratio:.1f}x lebih kecil, {spills} spill, {size:.0f} MB di disk); "
+        f"puncak 50k={peak_50k / 1e6:.0f} MB vs 400k={store_peak / 1e6:.0f} MB (datar={flat}); "
+        f"urutan utuh={order_ok}, file dihapus={cleaned}",
+        ok,
+    )
+
+
 CHECKS = [
     ("p0", "TLS context dibagi per proses", p0_shared_tls),
     ("p0", "Throughput 16 thread", p0_throughput_16),
@@ -795,6 +869,7 @@ CHECKS = [
     ("p4", "Index service paralel", p4_services_parallel),
     ("p4", "Batas UI + watcher", p4_ui_bounds),
     ("p5", "Klasifikasi tetap setara", p5_classifier),
+    ("p6", "Hasil dibatasi di memori", p6_result_store),
 ]
 
 
@@ -802,7 +877,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P3.")
     parser.add_argument(
         "--only",
-        choices=["p0", "p1", "p2", "p3", "p4", "p5"],
+        choices=["p0", "p1", "p2", "p3", "p4", "p5", "p6"],
         help="satu fase saja",
     )
     args = parser.parse_args(argv)

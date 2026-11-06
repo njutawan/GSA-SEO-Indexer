@@ -26,6 +26,7 @@ memakai TLS sama sekali. Itu plafon throughput yang sebenarnya, bukan latensi se
 | **P2** | `DnsCache._entries` tidak pernah dipangkas / menyimpan objek exception | 20.000 host → tabel dibatasi **10.000** entri; exception tidak disimpan | ✅ **tuntas** |
 | **P2** | `connect timeout` tidak berpengaruh di jalur default (urllib hanya menerima satu timeout) | host mati: **5,03 s → 4,00 s** (atau 1,00 s dengan `--timeout 1`) | ✅ **tuntas** |
 | **P2** | Tidak ada test, CI, atau linter (6.300 LOC, 0 test) | regresi performa/correctness tidak terdeteksi | 🟡 sebagian (39 test + benchmark) |
+| **P6** | `self.results` menahan **semua** baris sampai run selesai | 660k baris ≈ 115 MB; kini puncak datar (400k baris: 101 MB → **17 MB**) | ✅ **tuntas** |
 | **P3** | Tiga jalur HTTP paralel (`submit_one`, `submit_batch`, `PooledHttpClient`) | perilaku (timeout, redirect, verify) mudah menyimpang | ⬜ belum |
 | **P3** | `Settings.random_delay = True`, padahal `config.ini` menulis `0` dan dokumentasi bilang "tidak ada manfaat" | sleep 10–80 ms di dalam worker untuk API call langsung | ⬜ belum |
 
@@ -379,7 +380,7 @@ dikerjakan.
 | 2 | `_classify_link()` jalur "listed" menjalankan `_QUERY_ECHO_RE` atas **seluruh body** | **1,44 ms** per halaman 200 kB (anchor-hit 0,23 ms) | pecah alternasi jadi dua regex + cari di celah antar-match: **1,43 → 0,41 ms** (3,5×) | rendah — dengan harness ekuivalensi (280k kasus, 0 selisih) | **selesai** (§13) |
 | 3 | Laporan JSON memakai `indent=1` dan `json.dump` per baris | **100k baris: 1,90 s, 17,7 MB** (CSV: 0,10 s, 5,8 MB) | compact + tulis per blok: **−35% waktu, −14% ukuran** (100k baris) | rendah (format berubah; pembaca JSON tetap kompatibel) | **selesai** (§12.2) |
 | 4 | "Run enabled" ke index service berjalan **sekuensial** di satu thread | 48 service × 200 ms = **9,4 s** | 8 worker paralel: **1,2 s** (7,8×) | rendah–sedang (butuh pembatas + status per service di GUI) | **selesai** (§12.3) |
-| 5 | `self.results` menahan semua baris sampai run selesai | **17,7 MB / 100k baris** (slots) | run 660k baris ≈ 115 MB; streaming ke disk menghapusnya | sedang (mengubah API `results`/`write_report`) | **belum — ubah API** |
+| 5 | `self.results` menahan semua baris sampai run selesai | **17,7 MB / 100k baris** (slots) | jendela 20k baris + tumpah ke disk: **400k baris puncak 17 MB** (datar), laporan identik | sedang — **selesai tanpa mengubah API**: `ResultStore` tetap list-like (`append`/`iter`/`len`) | **selesai** (§14) |
 | 6 | Tidak ada `Accept-Encoding: gzip` di jalur urllib | body sampai 200 kB dikirim utuh | ±3–5× lebih sedikit byte pada halaman yang compressible | sedang (perlu A/B pada list asli; sebagian situs rewel soal header) | **belum — butuh A/B jaringan** |
 | 7 | 429/503 hanya dicatat `failed`, `Retry-After` diabaikan | satu baris hilang per kejadian | retry/backoff dalam run menaikkan yield, bukan kecepatan | rendah (perlu plafon percobaan) | **belum — ubah semantik** |
 | 8 | `PingTarget(mode="post")` tidak pernah mengirim body | `submit_one` selalu GET | fitur belum lengkap, bukan bottleneck | — (tidak ada target yang memakainya) | **belum — fitur** |
@@ -429,7 +430,7 @@ workflow rilis dari tag.
 | `gsa_seo_indexer/emulator.py` | `do_GET` mendefinisikan `path` (F821 yang ditemukan ruff) |
 | `.github/workflows/ci.yml`, `pyproject.toml` | CI matrix 3.10–3.13, `ruff check`, dev extra (P3 #5) |
 | `gsa_seo_indexer/engine.py`, `httpclient.py` | **fix P4**: timeout socket di-set ulang ke `read_timeout` setelah connect (urllib dan pooled) — read timeout sebelumnya tertimpa connect timeout |
-| `tools/verify_all.py` | skrip verifikasi ulang 25 pemeriksaan P0–P5, offline, `--only p0..p5` |
+| `tools/verify_all.py` | skrip verifikasi ulang 26 pemeriksaan P0–P6, offline, `--only p0..p6` |
 | `gsa_seo_indexer/engine.py` | `_opener()` di-cache per (proxy, verify) — 200 request = 1 build (P4 #1) |
 | `gsa_seo_indexer/engine.py` | laporan JSON compact, ditulis per 512 baris (`_dump_row`) (P4 #2) |
 | `gsa_seo_indexer/services.py` | `submit_many()`: 8 service paralel, urutan hasil tetap, bisa di-Stop (P4 #3) |
@@ -440,6 +441,10 @@ workflow rilis dari tag.
 | `gsa_seo_indexer/engine.py` | `_QUERY_RUN_RE` + `_QUOTED_URL_RE` dan pencarian di celah antar-match: keputusan "listed" 3,5× lebih cepat, hasil identik (P5) |
 | `tools/classify_diff.py` | harness ekuivalensi: implementasi lama disimpan sebagai referensi, korpus 12+ kasus tetap dan generator acak, mode `--only-timing` |
 | `tests/test_classify_equiv.py` | 8 test: fuzz via harness, korpus tetap, dan tiap bentuk yang menentukan (echo, teks, anchor, query) |
+| `gsa_seo_indexer/resultstore.py` | `ResultStore`: jendela `max_memory` baris di RAM, sisanya tumpah ke satu file pickle sementara (urut, thread-safe), `clear()`/`close()` menghapus file (P6) |
+| `gsa_seo_indexer/engine.py` | `Settings.max_results_in_memory = 20_000`; `Indexer.results` memakai `ResultStore` (pack/unpack tuple); `RunStats.indexable`/`listed` dihitung saat hasil masuk (P6) |
+| `gsa_seo_indexer/cli.py` | ringkasan memakai `stats.indexable`/`stats.listed`, bukan memindai seluruh `indexer.results` (yang kini bisa ada di disk) (P6) |
+| `tests/test_resultstore.py` | 8 test: jendela tanpa disk, tumpahan menjaga urutan, `clear()`/`close()`, pack/unpack, dan integrasi engine (laporan + ringkasan identik) |
 | `tests/test_engine.py` | 57 test: P0/P1/P2/P3 + `ReadTimeoutTest`, `OpenerCacheTest`, `ReportFormatTest` |
 | `tests/test_gui_rows.py` | 3 test: cap baris tabel GUI (dengan stub tkinter) |
 | `tests/test_perf_cache.py` | 12 test: streak host, prune/batas DNS, aktivasi cache |
@@ -461,7 +466,7 @@ python tools/bench_local.py 400 16
 # benar-benar memisahkan overhead klien: 1 thread
 python tools/bench_local.py 400 1
 
-# verifikasi ulang semua klaim P0-P5 sekaligus (offline, ±20 s)
+# verifikasi ulang semua klaim P0-P6 sekaligus (offline, ±29 s)
 python tools/verify_all.py
 
 # ekuivalensi klasifikasi: implementasi lama vs sekarang, 40k kasus acak
@@ -475,6 +480,7 @@ python -m unittest tests.test_engine -v       # engine + transport
 python -m unittest tests.test_perf_cache -v   # host cache + DNS cache
 python -m unittest tests.test_gui_rows -v     # cap tabel GUI (stub tkinter)
 python -m unittest tests.test_cli_timeouts -v # pemetaan opsi timeout
+python -m unittest tests.test_resultstore -v  # tumpahan hasil ke disk
 python -m unittest tests.test_engine.ReadTimeoutTest -v  # connect vs read timeout
 ```
 
@@ -490,7 +496,7 @@ Semua klaim P0–P3 diukur ulang dari nol oleh satu skrip, bukan dari catatan
 tahap sebelumnya:
 
 ```bash
-python tools/verify_all.py            # 20 pemeriksaan P0-P3 (±16 s; skrip kini 24 termasuk P4)
+python tools/verify_all.py            # 26 pemeriksaan P0-P6 (±29 s)
 python tools/verify_all.py --only p2  # satu fase
 ```
 
@@ -631,7 +637,7 @@ biaya klien.
 ```bash
 python -m unittest discover -s tests -v    # 92 test
 python tools/verify_all.py --only p4       # 4 pemeriksaan
-python tools/verify_all.py                 # 24 pemeriksaan semua fase
+python tools/verify_all.py                 # 26 pemeriksaan semua fase
 python tools/bench_local.py 400 1          # +24% vs commit sebelumnya
 ```
 
@@ -748,3 +754,96 @@ python tools/verify_all.py --only p5         # 1 pemeriksaan
   (bukan listed), teks terlihat, query sebelum atribut (tetap listed), anchor
   asli (indexed), target di awal body, dan payload ber-query string yang
   memang tidak pernah "listed" oleh kedua implementasi.
+
+---
+
+## 14. P6 — log hasil berbatas, laporan tetap identik
+
+Laporan baru ditulis setelah run selesai, jadi setiap baris harus tetap ada
+sampai saat itu. Pada run 50 URL x 11.000 situs (±660.000 baris) itu berarti
+**±115 MB** RAM yang ditahan dari awal sampai akhir — persis di run terbesar
+yang justru paling sering dipakai.
+
+### 14.1 Bentuk solusinya
+
+`self.results` tetap dipakai apa adanya oleh `write_report`, GUI, dan test,
+karena `ResultStore` berperilaku seperti list: `append`, `iter`, `len`, `bool`,
+`[index]`, `clear`. Bedanya hanya di penyimpanan:
+
+1. baris masuk ke jendela RAM (`max_results_in_memory = 20_000`);
+2. saat jendela penuh, isinya dipickle berurutan ke **satu** file sementara
+   (`tempfile.mkstemp(prefix="gsa-results-")`) lalu jendela dikosongkan;
+3. iterasi memutar ulang isi file lebih dulu, lalu jendela — urutannya sama
+   dengan list biasa;
+4. `clear()` (dipanggil di setiap awal run) dan `close()` menutup file dan
+   menghapusnya.
+
+Amannya kecil: `max_results_in_memory = 0` mengembalikan perilaku lama (semua
+di RAM), dan run di bawah 20.000 baris **tidak menyentuh disk sama sekali**.
+
+### 14.2 Biaya yang tidak kelihatan: pickle per baris
+
+Percobaan pertama menyimpan objek `Result` langsung. Hasil mikrobrench 500k
+baris: **3,19 µs/baris** dan file 19,1 MB. Yang mahal bukan I/O-nya, tapi
+pickle dataclass-nya. Karena itu baris dipak ke tuple delapan field sebelum
+dipickle, dan dibangun ulang jadi `Result` saat dibaca:
+
+| Per baris (500k baris) | Dataclass | Tuple |
+|---|---|---|
+| Waktu tumpah | 3,19 µs | **0,31 µs** |
+| Ukuran file | 19,1 MB | **13,9 MB** |
+
+`_pack_result()` menulis atribut satu per satu; versi `getattr` dalam loop
+terukur **0,79 µs** vs **0,30 µs** per baris, jadi loop itu dibuang.
+
+### 14.3 Dampak terukur
+
+Diukur dengan `tracemalloc`, hanya bagian *append* (pembangunan baris tidak
+ikut dihitung, kalau tidak yang terukur cuma biaya membuat `Result`):
+
+| 400.000 baris | List lama | `ResultStore` |
+|---|---|---|
+| Puncak memori | **101 MB** | **17 MB** (5,8x lebih kecil) |
+| Puncak saat 50k baris | - | 17 MB |
+| Puncak saat 400k baris | - | **17 MB** (datar) |
+| File tumpahan | - | 38 MB (20 spill), dihapus saat `close()` |
+| Overhead append | - | **+0,82 µs/baris** (500k baris = 0,41 s) |
+| Membaca ulang untuk laporan | - | 0,47-0,52 µs/baris (500k baris ± 0,25 s) |
+
+Angka pentingnya bukan "5,8x" (rasio itu ikut naik kalau run-nya lebih besar:
+500.000 baris terukur **125,0 MB vs 10,0 MB, 12,5x**), melainkan kolom
+**datar**: puncak memori 50k dan 400k baris sama-sama 17 MB, karena yang
+ditahan hanya jendela 20.000 baris. Selisih 10 MB vs 17 MB bukan regresi: yang
+terukur 10 MB adalah puncak jendela saja, sedangkan 17 MB termasuk batch tuple
+sementara saat menumpah 20.000 baris sekaligus.
+
+Waktu append (0,82 µs/baris) diukur **tanpa** `tracemalloc` aktif; dengan
+tracing menyala, angka yang sama terlihat seperti 7,4 µs/baris karena setiap
+alokasi dilacak - itu biaya alat ukurnya, bukan biaya kode.
+
+### 14.4 Yang dijamin sama, dan bagaimana dibuktikan
+
+- **Isi laporan**: `write_report` tidak diubah, ia tetap meng-iterasi
+  `self.results`. `ResultStoreTest` membandingkan isi laporan dengan cara lama
+  baris per baris (diurutkan berdasarkan `(target, url, status)`, karena
+  urutan selesai request tidak deterministik).
+- **Angka ringkasan**: CLI dulu menghitung `links`/`listed` dengan memindai
+  seluruh `indexer.results` — sekarang itu berarti membaca disk. Keduanya
+  dihitung saat hasil masuk (`RunStats.indexable`, `RunStats.listed`, di dalam
+  lock yang sama dengan `append`). Definisi `listed` yang lama
+  (`r.listed and not r.indexable`) dipertahankan lewat `elif`.
+- **Run kecil**: di bawah 20.000 baris tidak ada file yang dibuat (ada test-nya).
+
+### 14.5 Yang tidak diukur
+
+- Tidak ada run jaringan sungguhan 660k baris; semua angka di atas lokal.
+- Biaya tulis 38 MB ke disk diukur di sandbox ini, bukan di disk lambat/HDD.
+- Kalau proses **crash** di tengah run, file `gsa-results-*.pkl` tertinggal di
+  folder temp OS (tidak dibersihkan otomatis oleh aplikasi, hanya oleh OS).
+
+### 14.6 Test
+
+```bash
+python -m unittest discover -s tests -v      # 108 test (+8)
+python tools/verify_all.py --only p6         # 1 pemeriksaan
+```
