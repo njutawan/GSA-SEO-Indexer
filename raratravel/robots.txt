@@ -3,7 +3,10 @@
 
 User-agent: *
 Allow: /
-Disallow: /404.html
+
+# Halaman 404 sengaja TIDAK diblokir: crawler perlu bisa membacanya untuk
+# memastikan status 404 yang benar. Halaman itu sudah memakai
+# <meta name="robots" content="noindex, follow"> + canonical ke beranda.
 
 # AI crawlers: allowed (public marketing site)
 User-agent: GPTBot

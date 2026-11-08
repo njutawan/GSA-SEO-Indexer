@@ -175,6 +175,8 @@ Aturan penting:
 | WhatsApp link error | Nomor tidak format internasional | Gunakan `https://wa.me/62xxxxxxxxxx` tanpa `+` dan tanpa spasi |
 | Perubahan tidak terlihat | Cache HTML 1 jam + asset immutable | Hard reload, atau naikkan nama file asset (`style.v2.css`) |
 | Preview `*.pages.dev` redirect ke www | Rule canonical | Tambahkan pengecualian hostname `*.pages.dev` di Redirect Rule |
+| Klik `/#layanan` dari halaman 404 mendarat tidak pas | Layout bergeser setelah font/gambar termuat | Sudah ditangani: `settleHash()` di `js/main.js` menyelaraskan ulang posisi setelah `load` |
+| Halaman 404 terindeks Google | Meta `noindex` hilang | `404.html` memakai `noindex, follow` + canonical ke beranda; jangan blokir di `robots.txt` |
 | Lighthouse Performance turun | Gambar > 250 KB atau font ekstra | Kompres ulang WebP, kurangi weight font yang di-preload |
 
 ### Checklist QA
@@ -223,6 +225,7 @@ Pengujian dijalankan pada salinan lokal yang disajikan dengan gzip:
 | Responsif | Tidak ada horizontal scroll pada 320 / 375 / 768 / 1024 / 1440 px |
 | Tanpa JavaScript | Semua konten tetap terbaca, navigasi (termasuk menu mobile) tetap berfungsi |
 | `prefers-reduced-motion` | Semua transisi/reveal dimatikan, konten langsung tampil |
+| Anchor lintas halaman (`/#rute` dari 404) | Mendarat konsisten **86 px** di bawah header (74 px header + 12 px jarak) di semua section, desktop & mobile |
 | Keyboard | Skip-link, focus ring emas 3px, menu mobile bisa ditutup dengan Esc |
 | Ukuran | 32 file (termasuk README & tools) · ~1,1 MB total · tidak ada file > 500 KB · CSS 34 KB · JS 6,6 KB · gambar hero 33–80 KB |
 

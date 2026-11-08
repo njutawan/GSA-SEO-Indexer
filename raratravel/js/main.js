@@ -188,6 +188,43 @@
     });
   }
 
+  /* --------------------------------------------------------- Anchor landing
+     Cross-document links such as `/#harga` (used from 404.html) and reloads
+     with a hash can land in the wrong place once fonts/images change layout.
+     Re-align once after load; native behaviour stays the fallback. */
+  function headerOffset() {
+    var chrome = document.querySelector(".site-header");
+    var height = chrome ? chrome.getBoundingClientRect().height : 0;
+    var pad = parseFloat(
+      getComputedStyle(document.documentElement).scrollPaddingTop
+    );
+    return (isNaN(pad) ? 0 : pad) || height + 12;
+  }
+
+  function settleHash() {
+    var id = window.location.hash.slice(1);
+    if (!id) return;
+    var target = document.getElementById(id);
+    if (!target) return;
+
+    window.requestAnimationFrame(function () {
+      window.requestAnimationFrame(function () {
+        var destination =
+          target.getBoundingClientRect().top + window.scrollY - headerOffset();
+        if (Math.abs(window.scrollY - destination) <= 24) return;
+        window.scrollTo({
+          top: Math.max(destination, 0),
+          behavior: prefersReducedMotion.matches ? "auto" : "smooth"
+        });
+      });
+    });
+  }
+
+  if (window.location.hash) {
+    if (document.readyState === "complete") settleHash();
+    else window.addEventListener("load", settleHash, { once: true });
+  }
+
   /* --------------------------------------------------------- Footer year */
   var yearEl = document.getElementById("year");
   if (yearEl) yearEl.textContent = String(new Date().getFullYear());
