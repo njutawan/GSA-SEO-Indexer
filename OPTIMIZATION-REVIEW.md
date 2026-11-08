@@ -1576,8 +1576,21 @@ tahap itu — persis kasus yang paling sering gagal.
 
 Perbaikan ini masuk ke kode setelah tag `v1.3.0` dibuat, padahal belum ada
 satu pun berkas yang terunggah ke PyPI (masih 404). Karena itu tag dipindahkan
-sekali lagi ke commit perbaikan — **dan ini yang terakhir**: begitu PyPI
-menerima `1.3.0`, perbaikan berikutnya wajib lewat `1.3.1`.
+ke commit perbaikan.
+
+Saya sempat menulis di sini "dan ini yang terakhir" — itu keliru, karena
+sesudahnya ketemu bug kedua (§24.5) yang jauh lebih parah, sehingga tag
+dipindahkan sekali lagi. Kesalahannya bukan memindahkan tag (sah selama PyPI
+404), tapi **mengumumkan "terakhir" sebelum CI 3.12/3.13 hijau**.
+
+Aturan yang sekarang saya pegang, dicatat supaya tidak terulang:
+
+1. tag hanya dipindahkan selama `https://pypi.org/pypi/gsa-seo-indexer/json`
+   masih 404;
+2. sebelum memindahkan: `verify_all` 35/35, ruff bersih, dan **CI hijau di
+   keempat versi Python**, bukan hanya di 3.11 tempat saya bekerja;
+3. sesudah PyPI menerima `1.3.0`, tidak ada pemindahan tag sama sekali —
+   perbaikan berikutnya wajib `1.3.1`.
 
 Gate sesudah perubahan: **195 test OK**, ruff bersih, **35/35 verify PASS**
 (termasuk `P15` yang menjaga bug ini tidak kembali).
