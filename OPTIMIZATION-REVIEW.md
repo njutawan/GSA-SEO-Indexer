@@ -1335,3 +1335,61 @@ bisa dipakai lagi dan koreksi harus lewat `1.3.1`.
 Pelajaran yang saya catat untuk diri sendiri: `verify_all` membuktikan angka,
 bukan pipeline. Status CI harus dibaca (`gh run list`), bukan diasumsikan dari
 "semua hijau di lokal".
+
+### 22.6 Percobaan pertama setelah perbaikan: build hijau, publish ditolak
+
+Run `v1.3.0` yang kedua (`42494107139`):
+
+| Job | Hasil |
+|---|---|
+| Build sdist + wheel | ✅ 23 s, artefak `dist` 492 026 byte (bisa diunduh dari halaman run) |
+| Publish to PyPI | ❌ 12 s — ditolak di langkah `pypa/gh-action-pypi-publish` |
+
+Pesan dari PyPI, apa adanya:
+
+```
+Trusted publishing exchange failure:
+Token request failed: the server refused the request for the following reasons:
+* `invalid-publisher`: valid token, but no corresponding publisher
+  (Publisher with matching claims was not found)
+```
+
+Klaim yang dikirim GitHub (dari halaman run, untuk debugging):
+
+```
+sub             repo:njutawan@61883069/GSA-SEO-Indexer@1432203421:environment:pypi
+repository      njutawan/GSA-SEO-Indexer
+workflow_ref    njutawan/GSA-SEO-Indexer/.github/workflows/release.yml@refs/tags/v1.3.0
+```
+
+Artinya token OIDC-nya sah, tapi **tidak ada konfigurasi publisher di PyPI yang
+cocok dengan klaim itu**. Yang harus sama persis di halaman PyPI
+(*Your projects → Publishing*, atau *Pending publisher* bila proyeknya belum
+pernah terbit):
+
+| Kolom PyPI | Nilai untuk repo ini |
+|---|---|
+| PyPI Project Name | `gsa-seo-indexer` |
+| Owner | `njutawan` |
+| Repository name | `GSA-SEO-Indexer` |
+| Workflow name | `release.yml` |
+| Environment name | `pypi` |
+
+Empat kesalahan yang paling sering menghasilkan `invalid-publisher`:
+mendaftarkannya di **TestPyPI** padahal unggahan menuju PyPI; nama proyek
+ditulis `gsa_seo_indexer` (garis bawah); kolom *workflow* diisi `release.yaml`
+atau path lengkap `.github/workflows/release.yml` (PyPI hanya mau nama
+berkasnya); dan kolom *environment* dibiarkan kosong — pada kasus terakhir
+klaim `sub` kehilangan bagian `:environment:pypi` sehingga tidak cocok.
+
+Karena unggahan belum pernah berhasil (PyPI masih 404 untuk proyek ini),
+**tag tidak perlu diganti dan versi tidak perlu dinaikkan**. Sesudah
+konfigurasi PyPI diperbaiki, job yang gagal diulang tanpa commit baru:
+
+```bash
+gh run rerun 42494107139 --failed
+```
+
+Status pipeline pada commit `9844057`: **CI 5/5 hijau** (Python 3.10, 3.11,
+3.12, 3.13, dan job paket). Yang tersisa hanya satu langkah milik akun PyPI,
+bukan milik kode.
