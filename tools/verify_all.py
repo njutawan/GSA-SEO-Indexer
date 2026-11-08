@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-measure every optimisation claim from P0 to P13, offline.
+"""Re-measure every optimisation claim from P0 to P14, offline.
 
 The numbers in ``OPTIMIZATION-REVIEW.md`` were produced by one-off commands
 spread over three phases; this script turns them into a single re-runnable
@@ -10,7 +10,7 @@ CPU/memory claims are measured directly.
 Usage::
 
     python tools/verify_all.py            # all checks, table + exit code
-    python tools/verify_all.py --only p2  # one phase (p0..p13)
+    python tools/verify_all.py --only p2  # one phase (p0..p14)
 
 Every line prints the *measured* value next to the claim it backs, so a
 regression shows up as FAIL with the number that moved, not as a vague
@@ -1395,6 +1395,39 @@ def p13_async_proxy() -> tuple[str, bool]:
     )
 
 
+def p14_release_version() -> tuple[str, bool]:
+    """The version lives in two places and must agree; the tag must match too."""
+    import gsa_seo_indexer.engine as engine_module
+
+    root = Path(__file__).resolve().parent.parent
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+    declared = ""
+    for line in pyproject.splitlines():
+        if line.startswith("version = "):
+            declared = line.split("=", 1)[1].strip().strip('"')
+            break
+    code = engine_module.APP_VERSION
+    readme = (root / "README.md").read_text(encoding="utf-8")
+    badge = re.search(r"Version-([0-9][0-9.]+)-blue", readme)
+    badged = badge.group(1) if badge else ""
+
+    tags = subprocess.run(
+        ["git", "tag", "-l", "v*"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    ).stdout.split()
+    newest = sorted(tags)[-1] if tags else ""
+
+    ok = declared == code and badged == code and (not newest or newest == f"v{code}")
+    return (
+        f"pyproject={declared}, engine={code}, badge={badged or '-'}, "
+        f"tag terakhir={newest or 'belum ada'}",
+        ok,
+    )
+
+
 CHECKS = [
     ("p0", "TLS context dibagi per proses", p0_shared_tls),
     ("p0", "Throughput 16 thread", p0_throughput_16),
@@ -1429,17 +1462,18 @@ CHECKS = [
     ("p11", "Paket PyPI lengkap", p11_package),
     ("p12", "Pool koneksi di event loop", p12_async_pool),
     ("p13", "Proxy untuk transport asyncio", p13_async_proxy),
+    ("p14", "Versi rilis konsisten (pyproject/engine/badge/tag)", p14_release_version),
 ]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P13.")
+    parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P14.")
     parser.add_argument(
         "--only",
         choices=[
             "p0", "p1", "p2", "p3", "p4", "p5",
             "p6", "p7", "p8", "p9", "p10", "p11",
-            "p12", "p13",
+            "p12", "p13", "p14",
         ],
         help="satu fase saja",
     )

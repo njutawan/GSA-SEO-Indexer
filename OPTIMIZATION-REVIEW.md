@@ -1,4 +1,4 @@
-# Review Optimasi — GSA SEO Indexer v1.2.0
+# Review Optimasi — GSA SEO Indexer v1.3.0
 
 Dokumen ini menjawab satu pertanyaan: **optimasi apa yang masih dibutuhkan proyek ini,
 dan mana yang paling berdampak?** Semua angka di sini diukur, bukan diperkirakan —
@@ -446,7 +446,7 @@ workflow rilis dari tag.
 | `gsa_seo_indexer/emulator.py` | `do_GET` mendefinisikan `path` (F821 yang ditemukan ruff) |
 | `.github/workflows/ci.yml`, `pyproject.toml` | CI matrix 3.10–3.13, `ruff check`, dev extra (P3 #5) |
 | `gsa_seo_indexer/engine.py`, `httpclient.py` | **fix P4**: timeout socket di-set ulang ke `read_timeout` setelah connect (urllib dan pooled) — read timeout sebelumnya tertimpa connect timeout |
-| `tools/verify_all.py` | skrip verifikasi ulang 33 pemeriksaan P0–P13, offline, `--only p0..p13` |
+| `tools/verify_all.py` | skrip verifikasi ulang 34 pemeriksaan P0–P14, offline, `--only p0..p14` |
 | `gsa_seo_indexer/engine.py` | `_opener()` di-cache per (proxy, verify) — 200 request = 1 build (P4 #1) |
 | `gsa_seo_indexer/engine.py` | laporan JSON compact, ditulis per 512 baris (`_dump_row`) (P4 #2) |
 | `gsa_seo_indexer/services.py` | `submit_many()`: 8 service paralel, urutan hasil tetap, bisa di-Stop (P4 #3) |
@@ -501,7 +501,7 @@ python tools/bench_local.py 400 16
 # benar-benar memisahkan overhead klien: 1 thread
 python tools/bench_local.py 400 1
 
-# verifikasi ulang semua klaim P0-P13 sekaligus (offline, ±59 s)
+# verifikasi ulang semua klaim P0-P14 sekaligus (offline, ±59 s)
 python tools/verify_all.py
 
 # ekuivalensi klasifikasi: implementasi lama vs sekarang, 40k kasus acak
@@ -521,6 +521,7 @@ python -m unittest tests.test_gzip -v         # gzip + decode
 python -m unittest tests.test_retry -v        # retry 429/503
 python -m unittest tests.test_asyncio_transport -v  # transport event loop
 python -m unittest tests.test_asyncio_net -v  # pool + proxy di event loop
+python tools/verify_all.py --only p14          # versi rilis konsisten
 python -m unittest tests.test_packaging -v    # wheel + workflow rilis
 
 # bangun wheel dan periksa isinya (dipakai CI dan verify_all P11)
@@ -540,7 +541,7 @@ Semua klaim P0–P3 diukur ulang dari nol oleh satu skrip, bukan dari catatan
 tahap sebelumnya:
 
 ```bash
-python tools/verify_all.py            # 33 pemeriksaan P0-P13 (±59 s)
+python tools/verify_all.py            # 34 pemeriksaan P0-P14 (±59 s)
 python tools/verify_all.py --only p2  # satu fase
 ```
 
@@ -1117,7 +1118,7 @@ Publikasi memakai **trusted publishing** (`id-token: write`, environment
 ### 19.3 Bukti lokal
 
 ```bash
-python tools/check_package.py     # wheel=…1.2.0…, services=48, modules=16, data lengkap
+python tools/check_package.py     # wheel=…1.3.0…, services=48, modules=16, data lengkap
 python -m venv /tmp/venv && /tmp/venv/bin/pip install dist/*.whl
 /tmp/venv/bin/gsa-seo-indexer sites --count      # 11661
 /tmp/venv/bin/gsa-seo-indexer services --list    # 48 service dari site-packages
@@ -1129,8 +1130,9 @@ python -m venv /tmp/venv && /tmp/venv/bin/pip install dist/*.whl
   dan trusted publishing harus didaftarkan dulu di halaman PyPI
   (project -> Publishing -> tambahkan repo + `release.yml` + environment `pypi`).
   Yang dikerjakan di sini adalah jalur rilis yang siap dipakai.
-- Versi masih `1.2.0`; menaikkan versi tetap langkah manual (pyproject +
-  `engine.APP_VERSION`, dijaga test agar tetap sama).
+- Versi dinaikkan manual (pyproject + `engine.APP_VERSION`), tapi sekarang
+  dijaga dua lapis: test `test_packaging` dan cek `P14` di `verify_all`
+  (pyproject = engine = badge README = tag terakhir).
 - Belum ada percobaan ke TestPyPI.
 
 ---
@@ -1226,3 +1228,76 @@ tidak bisa "di-upgrade" menjadi TLS setelah dipakai; socket-nya bisa.
 python -m unittest tests.test_asyncio_net -v   # 10 test
 python tools/verify_all.py --only p12 --only p13
 ```
+
+---
+
+## 22. Rilis 1.3.0
+
+Versi dinaikkan dari `1.2.0` ke `1.3.0` karena dua kemampuan baru yang
+mengubah permukaan CLI (`--pool` dan `--use-proxy` kini juga berlaku di
+`--transport asyncio`). Tidak ada perubahan yang memutus pemakaian lama:
+tanpa `--pool` dan tanpa proxy, jalur request tetap satu koneksi per request.
+
+### 22.1 Isi rilis
+
+| Fase | Perubahan |
+|---|---|
+| P12 | `--pool` di event loop: satu koneksi per host, batas per host/total, idle TTL, retry sekali untuk koneksi basi (§20) |
+| P13 | Proxy di event loop: request line absolut untuk HTTP, tunnel `CONNECT` + TLS untuk HTTPS, verify-first dengan fallback per host (§21) |
+| — | `build/`, `dist/`, `*.whl` masuk `.gitignore` (dulu bisa ikut ter-commit) |
+| — | Cek `P14`: versi di `pyproject.toml`, `engine.APP_VERSION`, badge README, dan tag terakhir harus sama |
+
+### 22.2 Prosedur tag
+
+```bash
+# 1. versi naik di dua tempat (dijaga test + P14)
+python -m unittest tests.test_packaging -v
+python tools/verify_all.py --only p14
+
+# 2. tag anotasi, lalu dorong HANYA tag-nya
+git tag -a v1.3.0 -m "GSA SEO Indexer 1.3.0"
+git push origin v1.3.0
+```
+
+Tag `v*` memicu `.github/workflows/release.yml`: build sdist+wheel,
+`twine check --strict`, `tools/check_package.py`, smoke test CLI dari wheel di
+venv baru, unggah artefak, lalu job `publish` (environment `pypi`,
+`id-token: write`) memakai **trusted publishing** — tanpa token di repo.
+
+Sebelum tag didorong, jalur ini bisa diuji tanpa menerbitkan apa pun:
+
+```bash
+gh workflow run release.yml -f dry_run=true   # default-nya memang true
+```
+
+Job `publish` hanya jalan untuk `refs/tags/v*` saat `dry_run != true`, jadi
+rehearsal lewat `workflow_dispatch` selalu aman.
+
+### 22.3 Yang belum bisa saya lakukan (dan tidak saya klaim)
+
+- **Trusted publisher belum terdaftar, dan saya tidak bisa mendaftarkannya.**
+  Pendaftaran ada di UI PyPI (project → Publishing → tambahkan owner/repo,
+  nama workflow `release.yml`, environment `pypi`), dan itu butuh login akun
+  PyPI pemilik proyek. Saya tidak punya dan tidak akan meminta kredensial
+  tersebut.
+- **Proyeknya bahkan belum ada di PyPI**: `https://pypi.org/pypi/gsa-seo-indexer/json`
+  mengembalikan **404** saat rilis ini disiapkan, jadi belum pernah ada
+  unggahan sukses. Perlu diingat: *pending publisher* di PyPI tidak membuat
+  halaman proyek, jadi 404 ini **tidak** membuktikan trusted publisher belum
+  didaftarkan — hanya membuktikan belum ada rilis.
+- **Konsekuensinya**: tag `v1.3.0` baru didorong setelah pemilik repo
+  memastikan trusted publisher-nya ada. Kalau didorong lebih dulu, job
+  `build` tetap sukses (artefak bisa diunduh) tapi job `publish` gagal di
+  langkah unggah dengan pesan OIDC dari PyPI.
+- Belum ada uji ke **TestPyPI**; itu cara paling murah untuk membuktikan
+  konfigurasi OIDC sebelum proyeknya benar-benar terbit.
+
+### 22.4 Kalau tag ternyata salah
+
+```bash
+git tag -d v1.3.0                 # lokal
+git push origin :refs/tags/v1.3.0 # remote (hanya bila belum ada unggahan)
+```
+
+Setelah sebuah versi benar-benar terbit, PyPI menolak nomor yang sama untuk
+selamanya — koreksi harus lewat versi baru (`1.3.1`), bukan menimpa tag.

@@ -51,7 +51,7 @@ sehingga target muncul sebagai backlink di domain ber-otoritas tinggi.
 ![Dependencies](https://img.shields.io/badge/Dependencies-0-success?style=flat-square)
 ![Status](https://img.shields.io/badge/Status-active-success?style=flat-square)
 ![CI](https://github.com/njutawan/GSA-SEO-Indexer/actions/workflows/ci.yml/badge.svg?style=flat-square)
-![Version](https://img.shields.io/badge/Version-1.2.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/Version-1.3.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey?style=flat-square)
 
@@ -96,7 +96,7 @@ gsa-seo-indexer --version
 gsa-seo-indexer submit --url https://example.com/
 ```
 
-Rilis ke PyPI berjalan lewat tag (`git tag v1.2.0 && git push origin v1.2.0`):
+Rilis ke PyPI berjalan lewat tag (`git tag v1.3.0 && git push origin v1.3.0`):
 workflow membangun sdist + wheel, memeriksa isinya (`tools/check_package.py`),
 lalu mengunggah dengan **trusted publishing** — tidak ada token PyPI yang
 disimpan di repo.

@@ -2,7 +2,7 @@ name: Release
 
 # Publishing is driven by a tag, never by a branch push:
 #   1. bump the version in pyproject.toml (and gsa_seo_indexer/engine.py)
-#   2. git tag v1.2.0 && git push origin v1.2.0
+#   2. git tag v1.3.0 && git push origin v1.3.0
 # The workflow builds the sdist + wheel, checks the metadata, and uploads with
 # PyPI *trusted publishing* (OIDC) - there is no API token stored anywhere.
 # On PyPI, add this repository + workflow as a trusted publisher for the

@@ -48,7 +48,7 @@ pip install gsa-seo-indexer        # from PyPI
 pip install git+https://github.com/njutawan/GSA-SEO-Indexer.git
 ```
 
-Releases are cut from a tag (`git tag v1.2.0 && git push origin v1.2.0`): the
+Releases are cut from a tag (`git tag v1.3.0 && git push origin v1.3.0`): the
 workflow builds sdist + wheel, checks the contents, and uploads with **trusted
 publishing** — no PyPI token is stored in the repository.
 
