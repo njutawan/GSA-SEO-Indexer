@@ -10,6 +10,7 @@ the original binary is ``http://<host><path><target-url-with-scheme>``.
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import csv
 import datetime
 import email.utils
@@ -785,7 +786,12 @@ class Indexer:
         requirement would drop them, while never verifying leaves every
         submission open to a man-in-the-middle proxy.
         """
-        if needs_ssl_fallback(req.host):
+        # Key on the hostname, not ``req.host`` (which carries the port for a
+        # non-default one): the other transports key on the hostname, and a
+        # host only needs to be learned once - by whichever transport met the
+        # broken chain first.
+        key = host_of(req.full_url) or req.host
+        if needs_ssl_fallback(key):
             return self._opener(proxy, verify=False).open(req, timeout=timeout)
         try:
             return self._opener(proxy, verify=True).open(req, timeout=timeout)
@@ -796,7 +802,7 @@ class Indexer:
             if isinstance(exc, ssl.SSLCertVerificationError) or isinstance(
                 reason, ssl.SSLCertVerificationError
             ):
-                remember_ssl_fallback(req.host)
+                remember_ssl_fallback(key)
                 return self._opener(proxy, verify=False).open(req, timeout=timeout)
             raise
 
@@ -1667,6 +1673,26 @@ class Indexer:
         return path
 
 
+def _restore_socket_timeout(sock, timeout: float) -> None:
+    """Put the read timeout back on a socket that survived ``connect()``.
+
+    A failed TLS handshake *closes* the socket (CPython's
+    ``SSLSocket._create`` closes it before re-raising), while
+    ``HTTPConnection.sock`` still points at the now-dead object.  Calling
+    ``settimeout`` on it raises ``EBADF`` from inside the ``finally`` block,
+    which hides the real exception - and the one that matters most is
+    ``SSLCertVerificationError``, the signal that makes ``_urlopen`` retry the
+    host without verification.  The effect was: on the default (urllib)
+    transport every https host with a broken chain failed with "Bad file
+    descriptor" instead of being retried, and a proxy that carried such a host
+    was retired as if the proxy itself were broken.
+    """
+    if sock is None or getattr(sock, "_closed", False):
+        return
+    with contextlib.suppress(OSError):
+        sock.settimeout(timeout)
+
+
 class _ConnectTimeoutHTTPConnection(http.client.HTTPConnection):
     """``HTTPConnection`` with a separate timeout for the connect phase.
 
@@ -1698,8 +1724,7 @@ class _ConnectTimeoutHTTPConnection(http.client.HTTPConnection):
             # ``connect timeout = 4`` / ``read timeout = 5`` every page slower
             # than 4 s was recorded as a timeout.  Re-verification (P4) caught
             # it; ``tests/test_engine.py`` now pins both halves.
-            if self.sock is not None:
-                self.sock.settimeout(read_timeout)
+            _restore_socket_timeout(self.sock, read_timeout)
 
 
 class _ConnectTimeoutHTTPSConnection(http.client.HTTPSConnection):
@@ -1721,8 +1746,7 @@ class _ConnectTimeoutHTTPSConnection(http.client.HTTPSConnection):
             self.timeout = read_timeout
             # Same as the HTTP variant: the TLS handshake and the read that
             # follows must not inherit the connect timeout.
-            if self.sock is not None:
-                self.sock.settimeout(read_timeout)
+            _restore_socket_timeout(self.sock, read_timeout)
 
 
 class _ConnectTimeoutHTTPHandler(urllib.request.HTTPHandler):

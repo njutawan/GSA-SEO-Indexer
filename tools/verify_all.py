@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Re-measure every optimisation claim from P0 to P14, offline.
+"""Re-measure every optimisation claim from P0 to P15, offline.
 
 The numbers in ``OPTIMIZATION-REVIEW.md`` were produced by one-off commands
 spread over three phases; this script turns them into a single re-runnable
@@ -10,7 +10,7 @@ CPU/memory claims are measured directly.
 Usage::
 
     python tools/verify_all.py            # all checks, table + exit code
-    python tools/verify_all.py --only p2  # one phase (p0..p14)
+    python tools/verify_all.py --only p2  # one phase (p0..p15)
 
 Every line prints the *measured* value next to the claim it backs, so a
 regression shows up as FAIL with the number that moved, not as a vague
@@ -1428,6 +1428,178 @@ def p14_release_version() -> tuple[str, bool]:
     )
 
 
+class _RawTunnelProxy:
+    """Open proxy without credentials: absolute-form GET and CONNECT."""
+
+    def __init__(self, allow_connect: bool = True) -> None:
+        self.allow_connect = allow_connect
+        self.seen: list[tuple[str, str]] = []
+        self._sock = socket.socket()
+        self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._sock.bind(("127.0.0.1", 0))
+        self._sock.listen(64)
+        self.port = self._sock.getsockname()[1]
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        while True:
+            try:
+                client, _ = self._sock.accept()
+            except OSError:
+                return
+            threading.Thread(target=self._handle, args=(client,), daemon=True).start()
+
+    def _handle(self, client) -> None:
+        try:
+            head = b""
+            while b"\r\n\r\n" not in head:
+                chunk = client.recv(4096)
+                if not chunk:
+                    client.close()
+                    return
+                head += chunk
+            method, target, _v = head.split(b"\r\n", 1)[0].decode("latin-1").split(" ", 2)
+            self.seen.append((method, target))
+            if method == "GET" and target.startswith("http://"):
+                self._forward(client, target)
+                return
+            if method != "CONNECT" or not self.allow_connect:
+                client.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                client.close()
+                return
+            host, _, port = target.partition(":")
+            upstream = socket.create_connection((host, int(port)), timeout=5)
+            client.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+            rest = head.split(b"\r\n\r\n", 1)[1]
+            if rest:
+                upstream.sendall(rest)
+
+            def pump(src, dst) -> None:
+                try:
+                    while True:
+                        chunk = src.recv(65536)
+                        if not chunk:
+                            break
+                        dst.sendall(chunk)
+                except OSError:
+                    pass
+                finally:
+                    with contextlib.suppress(OSError):
+                        dst.shutdown(socket.SHUT_WR)
+
+            side = threading.Thread(target=pump, args=(client, upstream), daemon=True)
+            side.start()
+            pump(upstream, client)
+            side.join(timeout=5)
+            upstream.close()
+        finally:
+            with contextlib.suppress(OSError):
+                client.close()
+
+    def _forward(self, client, absolute: str) -> None:
+        parts = urllib.parse.urlsplit(absolute)
+        path = parts.path or "/"
+        if parts.query:
+            path += "?" + parts.query
+        upstream = socket.create_connection(
+            (parts.hostname or "", parts.port or 80), timeout=5
+        )
+        host = parts.hostname or ""
+        if parts.port:
+            host += f":{parts.port}"
+        upstream.sendall(
+            f"GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n".encode()
+        )
+        try:
+            while True:
+                chunk = upstream.recv(65536)
+                if not chunk:
+                    break
+                client.sendall(chunk)
+        finally:
+            upstream.close()
+
+    def close(self) -> None:
+        with contextlib.suppress(OSError):
+            self._sock.close()
+
+
+def p15_tls_fallback() -> tuple[str, bool]:
+    """HTTPS with a broken chain must be retried, with and without a proxy."""
+    if not shutil.which("openssl"):
+        return ("openssl tidak tersedia - dilewati", True)
+    from gsa_seo_indexer import httpclient
+
+    payload = "https://raratravel.id/"
+    with tempfile.TemporaryDirectory() as tmp:
+        cert, key = Path(tmp) / "c.pem", Path(tmp) / "k.pem"
+        made = subprocess.run(
+            [
+                "openssl", "req", "-x509", "-newkey", "rsa:2048",
+                "-keyout", str(key), "-out", str(cert), "-days", "1", "-nodes",
+                "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1",
+            ],
+            capture_output=True,
+            timeout=120,
+        )
+        if made.returncode != 0:
+            return ("openssl gagal membuat sertifikat - dilewati", True)
+        tls_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        tls_ctx.load_cert_chain(str(cert), str(key))
+
+        results = {}
+        with pool_serve_https(tls_ctx) as (_srv, port):
+            target = PingTarget(url=f"https://127.0.0.1:{port}/p?u=", mode="query")
+
+            httpclient._unverified_hosts.clear()
+            ix = _harness(threads=1)  # default: urllib, no pool - where the bug was
+            try:
+                direct = ix.run([payload], [target])
+            finally:
+                ix.close()
+            remembered = sorted(httpclient._unverified_hosts)
+            results["langsung"] = (direct[0].status, direct[0].error or "", remembered)
+
+            proxy = _RawTunnelProxy()
+            try:
+                httpclient._unverified_hosts.clear()
+                ix = _harness(threads=1, use_proxy=True)
+                ix.settings.proxy_list = [f"127.0.0.1:{proxy.port}"]
+                ix._proxy_pool = list(ix.settings.proxy_list)
+                ix._good_proxies = list(ix._proxy_pool)
+                try:
+                    proxied = ix.run([payload], [target])
+                    retired = list(ix._retired)
+                finally:
+                    ix.close()
+                connects = [t for m, t in proxy.seen if m == "CONNECT"]
+                results["lewat proxy"] = (
+                    proxied[0].status,
+                    proxied[0].error or "",
+                    f"{len(connects)} CONNECT, retired={len(retired)}",
+                )
+            finally:
+                proxy.close()
+                httpclient._unverified_hosts.clear()
+
+    direct_status, direct_error, remembered = results["langsung"]
+    proxy_status, proxy_error, proxy_fact = results["lewat proxy"]
+    ok = (
+        direct_status == "submitted"
+        and proxy_status == "submitted"
+        and remembered == ["127.0.0.1"]
+    )
+    detail = (
+        f"self-signed langsung: {direct_status}"
+        + (f" ({direct_error})" if direct_error else "")
+        + f" [diingat: {','.join(remembered) or '-'}]; "
+        f"lewat proxy tanpa kredensial: {proxy_status}"
+        + (f" ({proxy_error})" if proxy_error else "")
+        + f" [{proxy_fact}]"
+    )
+    return detail, ok
+
+
 CHECKS = [
     ("p0", "TLS context dibagi per proses", p0_shared_tls),
     ("p0", "Throughput 16 thread", p0_throughput_16),
@@ -1463,17 +1635,18 @@ CHECKS = [
     ("p12", "Pool koneksi di event loop", p12_async_pool),
     ("p13", "Proxy untuk transport asyncio", p13_async_proxy),
     ("p14", "Versi rilis konsisten (pyproject/engine/badge/tag)", p14_release_version),
+    ("p15", "TLS verify-first + proxy terbuka tanpa kredensial", p15_tls_fallback),
 ]
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P14.")
+    parser = argparse.ArgumentParser(description="Verifikasi ulang klaim P0-P15.")
     parser.add_argument(
         "--only",
         choices=[
             "p0", "p1", "p2", "p3", "p4", "p5",
             "p6", "p7", "p8", "p9", "p10", "p11",
-            "p12", "p13", "p14",
+            "p12", "p13", "p14", "p15",
         ],
         help="satu fase saja",
     )

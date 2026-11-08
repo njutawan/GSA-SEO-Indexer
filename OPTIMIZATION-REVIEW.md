@@ -1453,3 +1453,131 @@ Teks bantuan `--transport` masih berbunyi *"no proxy support, no batching"*
 padahal proxy sudah didukung sejak P13. Sudah diperbaiki jadi *"batching still
 runs on threads"* — contoh bahwa dokumentasi sebaris pun bisa basi walau
 kodenya benar.
+
+---
+
+## 24. Pertanyaan "bisakah pakai free proxy list tanpa user:pass?" — dan bug yang ketemu
+
+Pertanyaan aslinya: uji `https://raratravel.id` lewat **free proxy list tanpa
+`user:pass`**. Jawabannya ternyata dua: satu bug nyata di jalur default, dan
+satu penilaian praktis yang tidak enak tapi jujur.
+
+### 24.1 Bug: sertifikat rusak di jalur urllib berakhir "Bad file descriptor"
+
+`_ConnectTimeoutHTTPSConnection.connect()` menyimpan `self.timeout`
+(connect), memanggil `super().connect()`, lalu mengembalikannya di `finally`.
+Masalahnya: kalau handshake TLS gagal, CPython **menutup socket** di dalam
+`SSLSocket._create()` sebelum melempar exception, sementara
+`HTTPConnection.sock` masih menunjuk objek yang sudah mati. Baris
+`self.sock.settimeout(...)` di `finally` lalu melempar `EBADF` — dan menutupi
+exception aslinya.
+
+Akibatnya berantai:
+
+| Yang seharusnya | Yang terjadi (sebelum perbaikan) |
+|---|---|
+| `SSLCertVerificationError` → host diingat → ulangi tanpa verifikasi | `[Errno 9] Bad file descriptor`, host **tidak** diingat, baris `failed` |
+| proxy yang sehat tetap dipakai | proxy dianggap rusak lalu **di-retire**, sisa run kehilangan proxy |
+
+Ini hanya terjadi di jalur **urllib (tanpa `--pool`)** — yaitu konfigurasi
+default — jadi setiap situs https dengan rantai sertifikat rusak gagal total
+di sana, padahal dokumen ini berkali-kali menyebut "verify-first lalu fallback".
+
+Bukti sebelum/sesudah (sertifikat self-signed lokal, satu target):
+
+```
+sebelum:  urllib (default, tanpa --pool)  failed  <urlopen error [Errno 9] Bad file descriptor>
+          host diingat sebagai unverified: []
+sesudah:  urllib (default, tanpa --pool)  submitted
+          host diingat sebagai unverified: ['127.0.0.1']
+```
+
+Perbaikannya: `_restore_socket_timeout()` hanya menyentuh socket yang masih
+hidup (`getattr(sock, "_closed", False)` + `contextlib.suppress(OSError)`),
+sehingga exception asli sampai ke `_urlopen` dan fallback berjalan.
+Sekalian: kunci memori fallback diseragamkan ke **nama host** (dulu jalur
+urllib memakai `req.host` yang membawa port, jadi `127.0.0.1:33937` dan
+`127.0.0.1` tercatat sebagai dua host berbeda, dan kedua transport tidak
+berbagi memori).
+
+Pelajaran: bug ini tidak pernah muncul di test lama karena semua test TLS
+memakai `--pool` atau transport asyncio — jalur yang jalur koneksinya ditulis
+sendiri, bukan subclass `http.client`. Test baru (`tests/test_tls_fallback.py`,
+8 test) sengaja memakai jalur default.
+
+### 24.2 Free proxy tanpa kredensial: hasil uji lokal
+
+Proxy uji adalah **proxy terbuka yang benar-benar mem-forward** (bukan yang
+menjawab sendiri): request line absolut untuk HTTP, tunnel `CONNECT` untuk
+HTTPS, daftar ditulis seperti free list (`host:port`).
+
+| Skenario | threads | threads + `--pool` | asyncio | asyncio + `--pool` |
+|---|---|---|---|---|
+| HTTP lewat proxy terbuka | ✅ 3/3 | — | ✅ 3/3 | — |
+| HTTPS lewat `CONNECT` (self-signed) | ✅ 2/2 | ✅ 2/2 | ✅ 2/2 | ✅ 2/2 |
+| Proxy sehat di-retire? | tidak | tidak | tidak | tidak |
+| CONNECT terlihat di proxy (2 request) | 4 | 4 | 4 | 4 |
+
+Dua CONNECT per request itu disengaja: percobaan pertama **terverifikasi**
+gagal untuk sertifikat self-signed, host diingat, lalu tunnel dibangun ulang
+tanpa verifikasi.
+
+Perilaku saat daftar proxy "khas free list" (sebagian mati):
+
+| Kondisi | Hasil |
+|---|---|
+| 3 entri mati + 1 hidup, 3 target | baris yang kebetulan memakai proxy mati `failed` (request **tidak** diulang di proxy lain — itu akan menggandakan timeout di daftar yang sebagian besar mati), proxy mati di-retire, sisanya tetap jalan |
+| proxy hidup tapi menolak `CONNECT` (403) | `failed` + pesan `Tunnel connection failed: 403`, proxy di-retire, **host target tidak** ditandai mati |
+| semua proxy mati | run tetap selesai (tidak menggantung), semua baris `failed` |
+
+### 24.3 Jadi, apakah `raratravel.id` bisa disubmit lewat free proxy?
+
+Secara mekanisme: **ya** — tidak ada tempat di kode yang membutuhkan
+`user:pass`, dan `host:port` polos sudah cukup di keempat kombinasi transport.
+
+Yang **tidak** bisa saya klaim, dan ini penting:
+
+- Saya **tidak** bisa menjangkau `raratravel.id` dari sandbox ini (egress
+  hanya ke GitHub/PyPI). DNS-nya resolve (`104.21.78.237`, Cloudflare), tapi
+  koneksi keluar diblokir. Jadi tidak ada satu pun baris di atas yang
+  membuktikan situs Anda benar-benar menerima submission lewat proxy nyata.
+- Saya juga **tidak** bisa mengunduh free proxy list sungguhan (host-nya di
+  luar daftar yang diizinkan), jadi angka "berapa persen proxy hidup" tidak
+  saya punya.
+
+Penilaian praktis dari kode dan pengujian di atas — free proxy **bisa dipakai,
+tapi hasilnya buruk**:
+
+1. **Banyak free proxy menolak `CONNECT`** (hanya HTTP) atau hanya mengizinkan
+   port 80. Untuk target https ini langsung jadi baris `failed`.
+2. **Proxy mati di tengah run** adalah normal; kode menanganinya (retire +
+   ulang sekali), tapi throughput turun dan sebagian baris hilang.
+3. **IP free proxy sudah masuk daftar blokir** situs statistik; jawaban 403
+   atau 429 lebih sering daripada lewat IP sendiri.
+4. **Privasi**: proxy gratis melihat seluruh URL yang Anda submit — daftar
+   backlink Anda bukan rahasia bagi operatornya.
+
+Kalau tetap mau dipakai:
+
+```bash
+# 1. saring dulu; yang gagal tes tidak akan membuang timeout di dalam run
+gsa-seo-indexer submit -f urls.txt --proxy-file proxies.txt --test-proxies
+
+# 2. transport yang paling tahan terhadap proxy mati + pool koneksi
+gsa-seo-indexer submit -f urls.txt --proxy-file proxies.txt \
+    --transport asyncio --pool --threads 32 --retries 2
+```
+
+`--test-proxies` memakai `https://www.gstatic.com/generate_204` sebagai uji
+hidup, jadi proxy yang **tidak** bisa `CONNECT` ke 443 sudah tersaring di
+tahap itu — persis kasus yang paling sering gagal.
+
+### 24.4 Status rilis
+
+Perbaikan ini masuk ke kode setelah tag `v1.3.0` dibuat, padahal belum ada
+satu pun berkas yang terunggah ke PyPI (masih 404). Karena itu tag dipindahkan
+sekali lagi ke commit perbaikan — **dan ini yang terakhir**: begitu PyPI
+menerima `1.3.0`, perbaikan berikutnya wajib lewat `1.3.1`.
+
+Gate sesudah perubahan: **195 test OK**, ruff bersih, **35/35 verify PASS**
+(termasuk `P15` yang menjaga bug ini tidak kembali).
