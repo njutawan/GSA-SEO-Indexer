@@ -4,7 +4,7 @@ Landing page statis premium untuk **Rara Travel & Tour** — travel antar jemput
 door-to-door Bali ↔ Jawa, carter mobil, dan titipan paket kilat.
 
 - **Domain:** https://www.raratravel.id
-- **WhatsApp:** +62 813 5354 957
+- **WhatsApp:** +62 812 2509 3894
 - **Email:** hubungi@raratravel.id
 - **Stack:** HTML + CSS + vanilla JavaScript. Tanpa build step, tanpa npm, tanpa backend.
 
@@ -76,7 +76,7 @@ Untuk preview branch: `wrangler pages deploy . --branch=preview`.
 
 | Yang ingin diubah | Lokasi |
 |---|---|
-| Nomor WhatsApp | Cari & ganti `628135354957` di `index.html` (semua tautan `wa.me`) dan `404.html` |
+| Nomor WhatsApp | Cari & ganti `6281225093894` di `index.html` (semua tautan `wa.me`) dan `404.html` |
 | Email | Cari & ganti `hubungi@raratravel.id` di `index.html`, `404.html`, `sitemap.xml` (bila perlu) |
 | Teks hero / headline | `index.html` → `<section class="hero">` |
 | Kartu layanan | `index.html` → `<section id="layanan">` |
