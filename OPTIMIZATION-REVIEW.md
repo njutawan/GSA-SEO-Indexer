@@ -1301,3 +1301,37 @@ git push origin :refs/tags/v1.3.0 # remote (hanya bila belum ada unggahan)
 
 Setelah sebuah versi benar-benar terbit, PyPI menolak nomor yang sama untuk
 selamanya — koreksi harus lewat versi baru (`1.3.1`), bukan menimpa tag.
+
+### 22.5 Revisi: tag pertama merah, dan kenapa
+
+Tag `v1.3.0` didorong pertama kali ke commit `8a0f601`, dan **CI-nya merah**.
+Itu bukan kegagalan rilis 1.3.0 saja: CI sudah merah sejak commit P11 dua hari
+sebelumnya dan saya tidak memeriksanya — klaim "CI + package job PASS" di §19
+berarti "lolos di mesin lokal", bukan "lolos di GitHub Actions". Dua penyebab,
+keduanya bisa dibuktikan tanpa membaca log:
+
+| Gejala | Penyebab | Perbaikan |
+|---|---|---|
+| `Python 3.10` gagal, 3.11 lolos | `tests/test_packaging.py` mengimpor `tomllib`, yang **baru ada di 3.11** | impor `tomllib`/`tomli` opsional + test versi berbasis regex yang jalan di semua versi |
+| `Python 3.12/3.13` dan job `package`/`Release` gagal di "Check wheel contents" | `tools/check_package.py` memakai `pip wheel --no-build-isolation`, sedangkan env baru 3.12+ **tidak punya setuptools** | coba tanpa isolasi dulu, lalu ulangi **dengan** build isolation; workflow juga memasang `setuptools>=68` eksplisit |
+
+Bukti lokal untuk yang kedua: venv 3.11 tanpa setuptools
+(`pip uninstall setuptools`) menjalankan `tools/check_package.py` dan gagal
+dengan `ModuleNotFoundError: No module named 'setuptools'` — persis pesan yang
+akan muncul di runner. Sesudah perbaikan, venv yang sama **PASS**.
+
+Bukti untuk yang pertama: modul 3.10 disimulasikan dengan memblokir
+`tomllib`/`tomli` di `builtins.__import__`; hasilnya `Ran 10 tests ... OK
+(skipped=5)` — nol kegagalan, dan test versi baru tetap jalan. Di CI 3.10,
+`tomli` dipasang supaya lima test metadata itu benar-benar dieksekusi, bukan
+dilewati.
+
+Karena belum ada satu pun berkas yang terunggah (job `publish` tidak pernah
+jalan), tag dipindahkan ke commit perbaikan dengan `git tag -f` +
+`git push --force origin v1.3.0`. Memindahkan tag seperti ini **hanya** sah
+selama versi itu belum terbit: sesudah PyPI menerima `1.3.0`, nomornya tidak
+bisa dipakai lagi dan koreksi harus lewat `1.3.1`.
+
+Pelajaran yang saya catat untuk diri sendiri: `verify_all` membuktikan angka,
+bukan pipeline. Status CI harus dibaca (`gh run list`), bukan diasumsikan dari
+"semua hijau di lokal".

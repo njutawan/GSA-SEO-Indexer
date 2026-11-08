@@ -45,29 +45,38 @@ MIN_SERVICES = 40
 
 
 def build_wheel(out_dir: Path) -> Path:
-    """Build a wheel without network access and return its path."""
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pip",
-            "wheel",
-            ".",
-            "--no-deps",
-            "--no-build-isolation",
-            "-w",
-            str(out_dir),
-        ],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            "pip wheel gagal (butuh setuptools terpasang):\n"
-            + (result.stderr or result.stdout)[-800:]
+    """Build a wheel and return its path.
+
+    The first attempt skips build isolation: it uses the setuptools already
+    installed and needs no network.  The second allows isolation, because a
+    fresh environment on Python 3.12+ has **no setuptools** - and that is
+    exactly the GitHub runner the release workflow uses, where the isolated
+    build is the only one that works.
+    """
+    last = ""
+    for extra in (["--no-build-isolation"], []):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pip",
+                "wheel",
+                ".",
+                "--no-deps",
+                "-w",
+                str(out_dir),
+                *extra,
+            ],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=900,
         )
+        if result.returncode == 0:
+            break
+        last = (result.stderr or result.stdout)[-800:]
+    else:
+        raise RuntimeError("pip wheel gagal (tanpa dan dengan build isolation):\n" + last)
     wheels = sorted(out_dir.glob("*.whl"))
     if not wheels:
         raise RuntimeError("tidak ada wheel yang dihasilkan")

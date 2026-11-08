@@ -34,7 +34,7 @@ jobs:
       - name: Install build tooling
         run: |
           python -m pip install --upgrade pip
-          pip install "build>=1.2" "twine>=5"
+          pip install "build>=1.2" "twine>=5" "setuptools>=68"
 
       - name: Build
         run: python -m build

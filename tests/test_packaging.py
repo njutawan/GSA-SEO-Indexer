@@ -15,11 +15,19 @@ Run with::
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
-import tomllib
 import unittest
 from pathlib import Path
+
+try:  # Python 3.11+
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python 3.10
+    try:
+        import tomli as tomllib  # type: ignore[no-redef]
+    except ModuleNotFoundError:  # pragma: no cover - 3.10 tanpa tomli
+        tomllib = None  # type: ignore[assignment]
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -30,6 +38,24 @@ RUNTIME_FILES = (
 )
 
 
+class VersionConsistencyTest(unittest.TestCase):
+    """Runs on every Python: ``pyproject`` and the code must agree.
+
+    This one deliberately avoids ``tomllib`` (3.11+ only) so the check still
+    runs on the oldest supported interpreter - the same reason ``P14`` in
+    ``tools/verify_all.py`` reads the file with a regex.
+    """
+
+    def test_pyproject_version_matches_the_code(self) -> None:
+        from gsa_seo_indexer import engine
+
+        text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
+        self.assertIsNotNone(match, "pyproject.toml tanpa baris version")
+        self.assertEqual(match.group(1), engine.APP_VERSION)
+
+
+@unittest.skipUnless(tomllib is not None, "butuh tomllib (Python 3.11+) atau tomli")
 class ProjectMetadataTest(unittest.TestCase):
     def setUp(self) -> None:
         self.data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
