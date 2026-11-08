@@ -33,7 +33,20 @@ jobs:
         run: ruff check .
 
       - name: Tests
-        run: python -m unittest discover -s tests -v
+        run: |
+          set -o pipefail
+          python -m unittest discover -s tests -v 2>&1 | tee /tmp/tests.log
+
+      # Logs sit behind a storage host that some networks cannot reach, while
+      # annotations are served by the API - so every failure is echoed as an
+      # annotation, which is also what the pull-request view shows.
+      - name: Turn test failures into annotations
+        if: failure()
+        run: |
+          grep -E "^(FAIL|ERROR):|^[A-Za-z_.]*Error:|^Ran [0-9]+ test|^-*$" /tmp/tests.log \
+            | grep -vE "^-+$" | tail -30 | while IFS= read -r line; do
+              echo "::error::$line"
+            done
 
       - name: CLI smoke test
         run: |
