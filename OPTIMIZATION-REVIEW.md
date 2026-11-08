@@ -39,6 +39,8 @@ memakai TLS sama sekali. Itu plafon throughput yang sebenarnya, bukan latensi se
 | **P9** | 429/503 hanya dicatat `failed`, `Retry-After` diabaikan | 503 lalu 200: **1 -> 2 request, failed -> submitted**; plafon tunggu mencegah worker diparkir 60 s | ✅ **tuntas** (§17) |
 | **P10** | Concurrency hanya bisa dibeli dengan thread (satu stack per request) | `--transport asyncio`: baris & statistik identik; di loopback **setara** dengan thread (0,97-1,19x) | ✅ **tuntas** (§18) |
 | **P11** | Wheel tidak lengkap: `assets/app.ico` tidak ikut terpaket, rilis belum ada | `pip install` kini membawa ikon + 48 INI + 11.661 situs; rilis via tag, trusted publishing | ✅ **tuntas** (§19) |
+| **P12** | Jalur asyncio tidak punya pool: satu koneksi per request | pool 1 koneksi untuk 20 request ke 1 host, **1,6–3,5x** lebih cepat (tergantung server) | ✅ **tuntas** (§20) |
+| **P13** | `--transport asyncio` menolak proxy (jatuh ke thread) | HTTP absolut + tunnel **CONNECT** untuk HTTPS, tetap di event loop | ✅ **tuntas** (§21) |
 
 ---
 
@@ -394,8 +396,10 @@ dikerjakan.
 | 6 | Tidak ada `Accept-Encoding: gzip` di jalur urllib | body sampai 200 kB dikirim utuh | **120 kB -> 32,5 kB** di kabel (3,7x, halaman uji yang sengaja sulit dikompresi) | rendah — opt-in `--gzip`, plus dekode berplafon | **selesai** (§16) |
 | 7 | 429/503 hanya dicatat `failed`, `Retry-After` diabaikan | satu baris hilang per kejadian | **503 → 200 jadi 2 request dan `submitted`**; `Retry-After` dihormati sampai plafon | rendah — opt-in `--retries 0` default, plafon `retry_max_wait` | **selesai** (§17) |
 | 8 | `PingTarget(mode="post")` tidak pernah mengirim body | `submit_one` selalu GET, jadi target POST mengirim **nol** URL | kini form body sungguhan di kedua transport; perilaku GET tidak berubah | rendah (default tetap `append`/`query`, 15 test baru) | **selesai** (§15) |
-| 11 | Concurrency terbatas jumlah thread (satu stack per request) | — (bukan penghambat di loopback) | `--transport asyncio`: ribuan request in-flight tanpa thread | sedang — jalur baru, tanpa proxy/batch | **selesai** (§18) |
+| 11 | Concurrency terbatas jumlah thread (satu stack per request) | — (bukan penghambat di loopback) | `--transport asyncio`: ribuan request in-flight tanpa thread | sedang — jalur baru; batch masih thread | **selesai** (§18) |
 | 12 | Paket tidak siap rilis: `assets/app.ico` tidak ikut wheel, tidak ada workflow publish | `pip install` tanpa ikon tray | wheel lengkap + rilis tag dengan trusted publishing | rendah | **selesai** (§19) |
+| 13 | Tidak ada connection pooling di event loop (satu koneksi per request) | 20 request ke 1 host = 20 koneksi | **1 koneksi**, 1,6x (fixture) sampai 3,5x (server ber-NODELAY) lebih cepat | rendah — opt-in `--pool`, sama seperti jalur thread | **selesai** (§20) |
+| 14 | Transport asyncio tidak mendukung proxy | 429 situs di balik proxy tetap memakai thread | HTTP lewat request line absolut, HTTPS lewat **CONNECT** + TLS; tetap di loop | sedang — tunnel diuji dengan sertifikat self-signed | **selesai** (§21) |
 | 9 | `Gui._poll()` menguras queue tanpa batas per tick | — (tkinter tidak ada di sandbox) | batasi ±500 baris/tick agar jendela tetap responsif saat burst | rendah | **selesai** (§12.4) |
 | 10 | `UrlWatcher._seen` tumbuh tanpa batas pada watch panjang | — | LRU/batas ukuran | rendah | **selesai** (§12.4) |
 
@@ -442,7 +446,7 @@ workflow rilis dari tag.
 | `gsa_seo_indexer/emulator.py` | `do_GET` mendefinisikan `path` (F821 yang ditemukan ruff) |
 | `.github/workflows/ci.yml`, `pyproject.toml` | CI matrix 3.10–3.13, `ruff check`, dev extra (P3 #5) |
 | `gsa_seo_indexer/engine.py`, `httpclient.py` | **fix P4**: timeout socket di-set ulang ke `read_timeout` setelah connect (urllib dan pooled) — read timeout sebelumnya tertimpa connect timeout |
-| `tools/verify_all.py` | skrip verifikasi ulang 31 pemeriksaan P0–P11, offline, `--only p0..p11` |
+| `tools/verify_all.py` | skrip verifikasi ulang 33 pemeriksaan P0–P13, offline, `--only p0..p13` |
 | `gsa_seo_indexer/engine.py` | `_opener()` di-cache per (proxy, verify) — 200 request = 1 build (P4 #1) |
 | `gsa_seo_indexer/engine.py` | laporan JSON compact, ditulis per 512 baris (`_dump_row`) (P4 #2) |
 | `gsa_seo_indexer/services.py` | `submit_many()`: 8 service paralel, urutan hasil tetap, bisa di-Stop (P4 #3) |
@@ -466,6 +470,10 @@ workflow rilis dari tag.
 | `tools/check_package.py` | bangun wheel offline lalu periksa data, entry point, METADATA, dan workflow rilis (P11) |
 | `.github/workflows/release.yml` | rilis dari tag: build, `twine check --strict`, cek isi wheel, smoke CLI, upload artifact, publish dengan trusted publishing (P11) |
 | `.github/workflows/ci.yml` | job `package`: wheel dibangun dan CLI diuji dari site-packages (P11) |
+| `gsa_seo_indexer/asyncio_transport.py` | `_Pool` (kunci scheme/host/port/proxy, batas per host/total, idle TTL, `made`/`reused`), keep-alive + retry satu kali untuk koneksi basi (P12) |
+| `gsa_seo_indexer/asyncio_transport.py` | `parse_proxy()`, tunnel `CONNECT` (socket di executor + `loop.sock_*`, lalu TLS di atasnya), request line absolut untuk HTTP, retire proxy yang gagal (P13) |
+| `gsa_seo_indexer/engine.py` | `use_loop` tidak lagi mensyaratkan tanpa proxy; `transport_fallback = "batch -> threads"` (P13) |
+| `tests/test_asyncio_net.py` | 10 test: pool 1 vs 20 koneksi, koneksi basi, batas per host, POST di pool, proxy absolut, CONNECT+TLS, proxy mati, validasi alamat |
 | `tests/test_gzip.py` | 12 test: keputusan identik, kedua transport, server yang berbohong, stream terpotong, plafon, noindex |
 | `tests/test_retry.py` | 18 test: parsing `Retry-After`, plafon, exhausted, kedua transport, Stop saat backoff |
 | `tests/test_asyncio_transport.py` | 14 test: paritas baris/statistik, POST, gzip, redirect, chunked/EOF, host mati, cap koneksi, Stop, HTTPS self-signed |
@@ -493,7 +501,7 @@ python tools/bench_local.py 400 16
 # benar-benar memisahkan overhead klien: 1 thread
 python tools/bench_local.py 400 1
 
-# verifikasi ulang semua klaim P0-P11 sekaligus (offline, ±54 s)
+# verifikasi ulang semua klaim P0-P13 sekaligus (offline, ±59 s)
 python tools/verify_all.py
 
 # ekuivalensi klasifikasi: implementasi lama vs sekarang, 40k kasus acak
@@ -512,6 +520,7 @@ python -m unittest tests.test_post_target -v  # target POST + redirect
 python -m unittest tests.test_gzip -v         # gzip + decode
 python -m unittest tests.test_retry -v        # retry 429/503
 python -m unittest tests.test_asyncio_transport -v  # transport event loop
+python -m unittest tests.test_asyncio_net -v  # pool + proxy di event loop
 python -m unittest tests.test_packaging -v    # wheel + workflow rilis
 
 # bangun wheel dan periksa isinya (dipakai CI dan verify_all P11)
@@ -531,7 +540,7 @@ Semua klaim P0–P3 diukur ulang dari nol oleh satu skrip, bukan dari catatan
 tahap sebelumnya:
 
 ```bash
-python tools/verify_all.py            # 31 pemeriksaan P0-P11 (±54 s)
+python tools/verify_all.py            # 33 pemeriksaan P0-P13 (±59 s)
 python tools/verify_all.py --only p2  # satu fase
 ```
 
@@ -672,7 +681,7 @@ biaya klien.
 ```bash
 python -m unittest discover -s tests -v    # 92 test
 python tools/verify_all.py --only p4       # 4 pemeriksaan
-python tools/verify_all.py                 # 31 pemeriksaan semua fase
+python tools/verify_all.py                 # 33 pemeriksaan semua fase
 python tools/bench_local.py 400 1          # +24% vs commit sebelumnya
 ```
 
@@ -1123,3 +1132,97 @@ python -m venv /tmp/venv && /tmp/venv/bin/pip install dist/*.whl
 - Versi masih `1.2.0`; menaikkan versi tetap langkah manual (pyproject +
   `engine.APP_VERSION`, dijaga test agar tetap sama).
 - Belum ada percobaan ke TestPyPI.
+
+---
+
+## 20. P12 — connection pooling di event loop
+
+Transport asyncio dulu membuka satu koneksi per request (`Connection: close`),
+sama seperti urllib. Sekarang `--pool` berlaku juga di event loop: satu pool
+kecil per `(scheme, host, port, proxy)`, dengan batas `pool_per_host` /
+`pool_max_total` dan idle TTL 20 detik — angka yang sama dengan pool thread,
+supaya `--pool` berarti satu hal di kedua transport.
+
+### 20.1 Angka, dan jebakan di baliknya
+
+| 20 request ke 1 host | Koneksi | Waktu |
+|---|---|---|
+| tanpa pool | 20 | 20 koneksi baru |
+| `--pool` | **1** | 1,6x lebih cepat (cek `P12` di verify_all) |
+| `--pool`, server ber-`TCP_NODELAY` | **1** | **3,2–3,5x** lebih cepat |
+
+Baris ketiga butuh penjelasan, karena pengukuran pertama saya menunjukkan
+kebalikannya: pool tampak **26x lebih lambat** (23 vs 604 req/s). Penyebabnya
+bukan koneksi yang dipakai ulang, tapi `http.server` di fixture: ia menulis
+status line, header, dan body dengan syscall terpisah, dan selama koneksi
+tetap terbuka Nagle di sisi server menahan sisanya sampai delayed ACK datang
+(~40 ms). Dengan `Connection: close` efek itu tidak pernah muncul, karena
+penutupan socket langsung membuang buffer.
+
+Jadi: **angka pool sangat bergantung pada server**, dan 3,5x itu bukan janji
+untuk internet. Yang bisa diklaim: pool benar-benar memakai satu koneksi
+(dibuktikan dari port klien di sisi server, bukan dari hitungan internal), dan
+koneksi yang sudah ditutup server diulang sekali sehingga tidak ada baris yang
+hilang.
+
+### 20.2 Yang dijaga
+
+- Body harus terbaca penuh sebelum koneksi dikembalikan: body yang dipotong di
+  `max_body_bytes` menyisakan byte di socket, dan request berikutnya akan
+  membacanya sebagai status line.
+- `Connection: close` dari server, chunked yang terpotong, atau body tanpa
+  `Content-Length` (berakhir di EOF) berarti koneksi dibuang.
+- Koneksi keep-alive yang ternyata sudah mati dicoba ulang **sekali** pada
+  koneksi baru — sama dengan jalur thread.
+- Pool ditutup di `finally` saat run selesai, jadi tidak ada "unclosed
+  transport" saat event loop dibuang.
+
+---
+
+## 21. P13 — proxy untuk transport asyncio
+
+Sebelumnya `--transport asyncio` diam-diam jatuh ke thread kalau `--use-proxy`
+aktif (`transport_fallback = "proxy/batch -> threads"`). Sekarang proxy
+didukung penuh, dan hanya jalur batch yang tersisa di thread.
+
+### 21.1 Dua bentuk yang dipakai
+
+| Target | Yang dikirim ke proxy |
+|---|---|
+| `http://…` | request line **absolut**: `GET http://host/path?q HTTP/1.1` |
+| `https://…` | `CONNECT host:443 HTTP/1.1`, lalu **handshake TLS di dalam tunnel** |
+
+Tunnel dibangun dari socket mentah (`socket.create_connection` di executor,
+lalu `loop.sock_sendall`/`sock_recv` untuk pertukaran CONNECT) dan diserahkan
+ke `asyncio.open_connection(sock=…, ssl=…)`. Ini perlu karena stream asyncio
+tidak bisa "di-upgrade" menjadi TLS setelah dipakai; socket-nya bisa.
+
+### 21.2 Kebijakan yang sama dengan jalur thread
+
+- **Verify-first**: handshake pertama memakai context terverifikasi; kalau
+  sertifikatnya rusak, host diingat (`needs_ssl_fallback`) dan tunnel dibangun
+  ulang tanpa verifikasi. Untuk sertifikat self-signed ini berarti **dua
+  CONNECT** — terlihat di keluaran `P13` (`CONNECT,CONNECT`), dan itu memang
+  perilaku yang diharapkan.
+- **Proxy mati tidak menandai host mati**: proxy di-retire
+  (`Indexer._retire_proxy`) dan barisnya `failed` dengan pesan transport,
+  karena proxy yang mati tidak mengatakan apa pun tentang situs tujuan.
+- **Alamat proxy divalidasi** (`parse_proxy`): hanya `http`/`https`, dengan
+  port default 8080. Skema lain (mis. `socks5`) ditolak dengan pesan jelas
+  daripada dipakai sebagai proxy HTTP dan gagal secara membingungkan.
+
+### 21.3 Yang belum ada
+
+- **Proxy dengan autentikasi** (`Proxy-Authorization`): belum dikirim, sama
+  seperti jalur thread. Proxy berbayar yang meminta kredensial belum bisa
+  dipakai di kedua transport.
+- **SOCKS**: tidak didukung di mana pun.
+- Tunnel hanya diuji dengan server TLS lokal bersertifikat self-signed; belum
+  ada uji ke proxy sungguhan di internet.
+
+### 21.4 Test
+
+```bash
+python -m unittest tests.test_asyncio_net -v   # 10 test
+python tools/verify_all.py --only p12 --only p13
+```

@@ -223,7 +223,7 @@ Flag penting: `--threads`, `--proxy`, `--proxy-file`, `--test-proxies`, `--repor
 - 🎛️ **config.ini** — key meniru config asli GSA, bisa baca `config.ini` GSA langsung
 - 🔐 **API key terpisah** — `keys.json`, tidak pernah ditulis ke laporan; index service
   berbayar **selalu** memverifikasi sertifikat TLS
-- 🧪 **176 test + CI** — `python -m unittest discover -s tests`, matrix Python 3.10–3.13
+- 🧪 **186 test + CI** — `python -m unittest discover -s tests`, matrix Python 3.10–3.13
   dan `ruff check` (dev-only; runtime tetap zero-dependency)
 - ⚡ **Index service paralel** — "Run enabled" mengirim ke 8 service sekaligus
   (48 service: 9,4 s → 1,2 s); CLI punya `services --run-enabled`
@@ -237,6 +237,10 @@ Flag penting: `--threads`, `--proxy`, `--proxy-file`, `--test-proxies`, `--repor
   berplafon (`--retry-max-wait`, default 10 s) supaya worker tidak diparkir
 - 🧵 **`--transport asyncio` (opsional)** — satu event loop menggantikan thread pool;
   aturan (klasifikasi, gzip, POST, retry, host mati) sama persis dengan jalur thread
+- ♻️ **`--pool` di event loop** — 20 request ke satu host memakai **1 koneksi**
+  (1,6x cepat di fixture, 3,2–3,5x bila server memakai `TCP_NODELAY`)
+- 🕵️ **Proxy di event loop** — HTTP lewat request line absolut, HTTPS lewat tunnel
+  `CONNECT` + TLS (verify-first dengan fallback per host)
 
 ---
 

@@ -165,7 +165,7 @@ Key flags: `--threads`, `--proxy`, `--report`, `--modern`, `--batch`, `--fast`,
 - 🎛️ **config.ini** — keys mirror the original GSA config; can read GSA's own `config.ini`
 - 🔐 **Separate API keys** — `keys.json`, never written to reports; paid index
   services **always** verify the TLS certificate
-- 🧪 **176 tests + CI** — `python -m unittest discover -s tests`, Python 3.10–3.13
+- 🧪 **186 tests + CI** — `python -m unittest discover -s tests`, Python 3.10–3.13
   matrix plus `ruff check` (dev-only; the runtime stays dependency-free)
 - ⚡ **Parallel index services** — "Run enabled" submits to 8 services at once
   (48 services: 9.4 s → 1.2 s); the CLI has `services --run-enabled`
@@ -179,6 +179,10 @@ Key flags: `--threads`, `--proxy`, `--report`, `--modern`, `--batch`, `--fast`,
   `--retry-max-wait` (10 s default) so a worker is never parked for a minute
 - 🧵 **`--transport asyncio` (optional)** — one event loop instead of the thread pool; the
   rules (classification, gzip, POST, retry, dead hosts) are the same as the thread path
+- ♻️ **`--pool` on the loop** — 20 requests to one host use **1** connection (1.6x on the
+  local fixture, 3.2–3.5x when the server disables Nagle)
+- 🕵️ **Proxies on the loop** — plain HTTP via the absolute request line, HTTPS via a
+  `CONNECT` tunnel plus TLS (verify-first with the usual per-host fallback)
 
 ---
 

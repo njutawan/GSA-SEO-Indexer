@@ -192,8 +192,12 @@ python -m gsa_seo_indexer.cli submit -f urls.txt --gzip
 # coba ulang 429/503, hormati Retry-After, tunggu maksimal 10 detik
 python -m gsa_seo_indexer.cli submit -f urls.txt --retries 2 --retry-max-wait 10
 
-# satu event loop menggantikan thread pool (tanpa proxy/batch)
+# satu event loop menggantikan thread pool (batch masih lewat thread)
 python -m gsa_seo_indexer.cli submit -f urls.txt --threads 200 --transport asyncio
+
+# event loop + connection pool + proxy (HTTP absolut, HTTPS lewat CONNECT)
+python -m gsa_seo_indexer.cli submit -f urls.txt --transport asyncio --pool \
+    --use-proxy --proxy 1.2.3.4:8080
 
 # uji proxy dulu sebelum run; yang mati dibuang,
 # kalau semua mati run jalan TANPA proxy
