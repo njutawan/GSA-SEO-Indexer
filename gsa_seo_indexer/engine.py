@@ -1327,11 +1327,11 @@ class Indexer:
                     return
                 pending[pool.submit(worker, item)] = item
 
-        use_loop = (
-            self.settings.transport == "asyncio"
-            and not self.settings.use_proxy
-            and batch_size in (0, 1)
-        )
+        # The event loop speaks proxies too now (absolute request line for
+        # http, CONNECT for https); only the batched path still belongs to the
+        # thread pool, because a batch is a property of the target, not of the
+        # transport.
+        use_loop = self.settings.transport == "asyncio" and batch_size in (0, 1)
         if use_loop:
             # One event loop instead of a thread per in-flight request.  The
             # rows, stats and host cache come out of the same helpers, so a
@@ -1341,10 +1341,9 @@ class Indexer:
             run_work(self, work, on_result)
         else:
             if self.settings.transport == "asyncio":
-                # Proxy support and the batched path only exist for
-                # threads; falling back silently would hide that, so the
-                # reason is recorded for the caller to report.
-                self.transport_fallback = "proxy/batch -> threads"
+                # Only the batched path is thread-only; falling back silently
+                # would hide that, so the reason is recorded for the caller.
+                self.transport_fallback = "batch -> threads"
             with concurrent.futures.ThreadPoolExecutor(
                 max_workers=max(1, self.settings.threads)
             ) as pool:

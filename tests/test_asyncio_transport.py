@@ -407,22 +407,21 @@ class AsyncBatchTest(unittest.TestCase):
             finally:
                 indexer.close()
 
-        self.assertEqual(indexer.transport_fallback, "proxy/batch -> threads")
+        self.assertEqual(indexer.transport_fallback, "batch -> threads")
         self.assertEqual(len(results), 2)
 
-    def test_proxy_runs_use_threads(self) -> None:
+    def test_proxy_runs_stay_on_the_loop(self) -> None:
+        """A proxy must not silently push the run back to the thread pool."""
         indexer = make_indexer(transport="asyncio", use_proxy=True, proxy_list=["127.0.0.1:9"])
         try:
-            self.assertEqual(indexer.settings.transport, "asyncio")
-            # no host is reachable through that proxy; what matters is that
-            # the run completes through the thread path instead of hanging
             results = indexer.run(
                 [TARGET], [PingTarget(url="http://127.0.0.1:1/")], reset=True
             )
         finally:
             indexer.close()
         self.assertEqual(len(results), 1)
-        self.assertEqual(indexer.transport_fallback, "proxy/batch -> threads")
+        self.assertEqual(results[0].status, "failed")
+        self.assertEqual(indexer.transport_fallback, "", "proxy is supported on the loop now")
 
 
 class AsyncSocketSanityTest(unittest.TestCase):
