@@ -1,0 +1,42 @@
+# ============================================================================
+# Cloudflare Pages headers — https://developers.cloudflare.com/pages/configuration/headers/
+# Order matters: the first matching rule wins for a given header name.
+# ============================================================================
+
+/*.html
+  Cache-Control: public, max-age=3600, s-maxage=3600, must-revalidate
+
+/
+  Cache-Control: public, max-age=3600, s-maxage=3600, must-revalidate
+
+/*
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: geolocation=(), microphone=(), camera=(), payment=(), interest-cohort=()
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Resource-Policy: same-origin
+  Strict-Transport-Security: max-age=31536000; includeSubDomains; preload
+  Content-Security-Policy: default-src 'self'; base-uri 'self'; object-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self' https://wa.me; frame-ancestors 'none'; upgrade-insecure-requests
+
+# Immutable build assets — one year
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+  Access-Control-Allow-Origin: https://www.raratravel.id
+
+/css/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/js/*
+  Cache-Control: public, max-age=31536000, immutable
+
+# Never cache the machine-readable SEO files for long
+/robots.txt
+  Cache-Control: public, max-age=86400
+
+/sitemap.xml
+  Cache-Control: public, max-age=86400
+  Content-Type: application/xml; charset=utf-8
+
+/404.html
+  Cache-Control: public, max-age=300

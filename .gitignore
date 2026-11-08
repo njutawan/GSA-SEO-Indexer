@@ -21,3 +21,6 @@ Thumbs.db
 dist/
 build/
 *.spec.bak
+
+# Landing page tooling cache
+raratravel/tools/__pycache__/

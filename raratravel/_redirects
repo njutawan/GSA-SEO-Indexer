@@ -1,0 +1,30 @@
+# ============================================================================
+# Cloudflare Pages redirects — https://developers.cloudflare.com/pages/configuration/redirects/
+# Format:  <from>  <to>  <status>
+# Canonical host: https://www.raratravel.id
+# ============================================================================
+
+# --- Canonical host: apex → www (pages.dev cannot do host-level redirects,
+#     so this rule is a safety net; the authoritative apex→www redirect lives
+#     in the Cloudflare "Redirect Rules" for the zone. See README.) ----------
+https://raratravel.id/*  https://www.raratravel.id/:splat  301
+
+# --- /index.html → / ------------------------------------------------------
+/index.html            /                       301
+
+# --- Trailing slash normalization (pages → extensionless files) -----------
+/layanan/              /#layanan               301
+/keunggulan/           /#keunggulan            301
+/rute/                 /#rute                  301
+/harga/                /#harga                 301
+/faq/                  /#faq                   301
+/cara-pemesanan/       /#cara-pesan            301
+
+# --- Future-ready anchor pages (safe placeholders → single-page anchors) ---
+/rute/bali-jawa/       /#rute                  301
+/rute/denpasar-surabaya/  /#rute               301
+/rute/denpasar-jakarta/   /#rute               301
+/layanan/travel-antar-jemput/  /#layanan       301
+/layanan/carter-mobil/         /#layanan       301
+/layanan/titipan-paket-kilat/  /#layanan       301
+

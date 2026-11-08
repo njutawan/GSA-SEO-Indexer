@@ -1,0 +1,16 @@
+# robots.txt — Rara Travel & Tour
+# https://www.raratravel.id
+
+User-agent: *
+Allow: /
+Disallow: /404.html
+
+# AI crawlers: allowed (public marketing site)
+User-agent: GPTBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+Sitemap: https://www.raratravel.id/sitemap.xml
+Host: https://www.raratravel.id

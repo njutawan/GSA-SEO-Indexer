@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Rara Travel & Tour">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#123A7A"/>
+      <stop offset="1" stop-color="#0B2248"/>
+    </linearGradient>
+  </defs>
+  <rect width="64" height="64" rx="16" fill="url(#g)"/>
+  <rect x="1" y="1" width="62" height="62" rx="15" fill="none" stroke="#D9A441" stroke-opacity=".45"/>
+  <path d="M32 14 50 48H14L32 14Z" fill="none" stroke="#D9A441" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M24 39h16" stroke="#F5E7C8" stroke-width="3" stroke-linecap="round"/>
+</svg>
