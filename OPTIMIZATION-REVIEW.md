@@ -1393,3 +1393,63 @@ gh run rerun 42494107139 --failed
 Status pipeline pada commit `9844057`: **CI 5/5 hijau** (Python 3.10, 3.11,
 3.12, 3.13, dan job paket). Yang tersisa hanya satu langkah milik akun PyPI,
 bukan milik kode.
+
+---
+
+## 23. Apa yang masih tersisa (audit ulang, setelah P13)
+
+Daftar peluang di §8 sudah kosong: tiga belas temuan terukur, semuanya
+`selesai`. Jadi pertanyaan "masih ada yang bisa dioptimasi?" jawabannya bukan
+"tidak ada", tapi **"yang tersisa sudah bukan soal kecepatan kode"**. Tiga
+kelompok, dipisah menurut apa yang benar-benar bisa dibuktikan di sini.
+
+### 23.1 Celah fungsional — kecil, bisa diuji lokal
+
+| # | Celah | Dampak | Perkiraan |
+|---|---|---|---|
+| 1 | **`Proxy-Authorization` tidak dikirim** di kedua transport | proxy berbayar (yang mewajibkan kredensial) tidak bisa dipakai sama sekali; ini yang paling sering diminta orang yang menjalankan 429 situs | kecil — satu header + parsing `user:pass@host:port`, plus test proxy yang menolak tanpa kredensial |
+| 2 | **SOCKS4/5 tidak didukung** | proxy SOCKS harus dibungkus tool lain dulu | sedang — `parse_proxy` sekarang justru menolaknya dengan pesan jelas; implementasi butuh handshake sendiri |
+| 3 | **Batch masih jalur thread** (`transport_fallback = "batch -> threads"`) | `--transport asyncio --batch N` tidak memakai event loop | kecil–sedang — batch hanya menggabungkan URL per target, tidak butuh thread |
+| 4 | **GUI/tray belum pernah dijalankan di sini** | jalur tkinter, ikon tray, dan penjadwalan `_poll()` hanya diuji secara statis | tidak bisa saya ukur — sandbox tanpa display |
+
+### 23.2 Optimasi yang *mungkin* masih ada, tapi tanpa bukti lokal
+
+Ini yang saya **tidak** kerjakan justru karena tidak bisa dibuktikan di sini —
+bukan karena sudah pasti tidak ada.
+
+| # | Dugaan | Kenapa belum | Cara membuktikannya |
+|---|---|---|---|
+| 1 | Semua angka di dokumen ini dari **loopback**; di internet, RTT dan DNS mendominasi | sandbox hanya bisa keluar ke github.com/pypi.org, bukan ke 429 situs target | jalankan `tools/bench_local.py` vs run 200 situs nyata di mesin Anda, bandingkan req/s dan p50/p95 |
+| 2 | **TLS session resumption** lintas koneksi ke host yang sama | context sudah dipakai bersama sejak P0, tapi session cache-nya belum pernah diukur | hitung `openssl s_client -reconnect` atau waktu handshake kedua ke host yang sama |
+| 3 | Default **pool** (2/host, 96 total, TTL 20 s) belum di-tune | angka ini disalin dari jalur thread, bukan hasil pengukuran beban nyata | sapu 1/2/4 per host × TTL 5/20/60 s pada run nyata |
+| 4 | Biaya **retry koneksi basi** saat run panjang (server menutup keep-alive) | baru diuji 1 kasus; frekuensinya di run 10 ribu request belum diukur | jalankan `--pool` ke server dengan idle timeout pendek, hitung rasio retry |
+
+### 23.3 Yang sudah terbukti jalan buntu (jangan diulang)
+
+- Batching lock per hasil di `run()` — 0,08 s per 500k baris, tidak sepadan.
+- `_classify_link` dengan jendela pencarian — lebih lambat dari versi sekarang.
+- Decode+lower 120 kB hanya untuk mencari `noindex` — 0,08 ms, sama dengan
+  pencarian di bytes.
+- `_headers()`, `host_of()`, `Result()` — sudah dalam orde mikrodetik.
+- Nagle: `http.client` sudah menyalakannya; yang tersisa hanyalah artefak
+  `http.server` di fixture (§20.1).
+
+### 23.4 Kriteria berhenti yang saya pakai
+
+Angka sesudah P13, semua diukur ulang oleh `tools/verify_all.py`
+(34 pemeriksaan, ±59 s): 16 thread **43,8 → 315,4 req/s** (P0), `check_urls`
+**3,00 → 0,60 s** (P1), opener **844 → 1.140 req/s** (P4), `listed`
+**1,43 → 0,41 ms** (P5), report 400k baris **101 → 17 MB** (P6), gzip
+**3,7x lebih kecil** (P8), pool **1 koneksi untuk 20 request** (P12).
+
+Sesudah titik ini, biaya terbesar sebuah run bukan lagi di kode kita: ia ada
+di RTT ke 429 host, DNS, dan kebijakan server target (429/503). Optimasi
+berikutnya harus datang dari **pengukuran di internet nyata**, bukan dari
+membaca kode lagi.
+
+### 23.5 Satu temuan kecil yang sempat tertinggal
+
+Teks bantuan `--transport` masih berbunyi *"no proxy support, no batching"*
+padahal proxy sudah didukung sejak P13. Sudah diperbaiki jadi *"batching still
+runs on threads"* — contoh bahwa dokumentasi sebaris pun bisa basi walau
+kodenya benar.

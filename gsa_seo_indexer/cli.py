@@ -193,7 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["threads", "asyncio"],
         default=None,
         help="submission transport: a thread pool (default) or one asyncio "
-        "event loop (no proxy support, no batching)",
+        "event loop (batching still runs on threads)",
     )
     s.add_argument(
         "--retries",
