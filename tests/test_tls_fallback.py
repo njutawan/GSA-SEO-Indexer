@@ -280,6 +280,39 @@ class SslFallbackTest(unittest.TestCase):
         self.assertNotIn("Bad file descriptor", results[0].error or "")
 
 
+class UrllibHandlerTest(unittest.TestCase):
+    """The 3.12/3.13 shape of ``urllib.request.HTTPSHandler``.
+
+    Those versions dropped the handler-side ``check_hostname`` attribute; the
+    override here used to read it unconditionally, so ``https_open`` raised
+    AttributeError before sending anything - every https target failed on the
+    default transport.  The attribute is removed here by hand so the check runs
+    on every Python, not only on the two that broke.
+    """
+
+    def test_https_open_works_without_the_check_hostname_attribute(self) -> None:
+        from gsa_seo_indexer import engine
+
+        with self_signed_cert() as cert:
+            with origin(cert) as (port, srv):
+                indexer = make_indexer()
+                try:
+                    opener = indexer._opener(None, verify=False)
+                finally:
+                    indexer.close()
+                handler = next(
+                    h for h in opener.handlers
+                    if isinstance(h, engine._ConnectTimeoutHTTPSHandler)
+                )
+                handler.__dict__.pop("_check_hostname", None)
+                import urllib.request
+
+                with opener.open(
+                    urllib.request.Request(f"https://127.0.0.1:{port}/p"), timeout=5
+                ) as resp:
+                    self.assertEqual(resp.status, 200)
+
+
 class OpenProxyTest(unittest.TestCase):
     """A free-proxy-style list: ``host:port``, no credentials."""
 

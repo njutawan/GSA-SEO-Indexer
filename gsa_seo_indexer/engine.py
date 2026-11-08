@@ -1769,13 +1769,20 @@ class _ConnectTimeoutHTTPSHandler(urllib.request.HTTPSHandler):
         self._connect_timeout = connect_timeout
 
     def https_open(self, req):
+        kwargs = {"context": self._context}
+        # ``check_hostname`` was deprecated on the handler in 3.12 and removed
+        # in 3.13; the context already carries that policy.  Reading it
+        # unconditionally raised AttributeError before a single byte was sent,
+        # which meant **no https request worked at all** on 3.12/3.13 with the
+        # default (urllib) transport.
+        if hasattr(self, "_check_hostname"):
+            kwargs["check_hostname"] = self._check_hostname
         return self.do_open(
             functools.partial(
                 _ConnectTimeoutHTTPSConnection, connect_timeout=self._connect_timeout
             ),
             req,
-            context=self._context,
-            check_hostname=self._check_hostname,
+            **kwargs,
         )
 
 

@@ -1560,6 +1560,28 @@ def p15_tls_fallback() -> tuple[str, bool]:
             remembered = sorted(httpclient._unverified_hosts)
             results["langsung"] = (direct[0].status, direct[0].error or "", remembered)
 
+            # The urllib handler shape of Python 3.12/3.13: ``check_hostname``
+            # was dropped there, and reading it unconditionally used to break
+            # every https request on the default transport.
+            import gsa_seo_indexer.engine as engine_module
+
+            ix = _harness(threads=1)
+            try:
+                opener = ix._opener(None, verify=False)
+                handler = next(
+                    h for h in opener.handlers
+                    if isinstance(h, engine_module._ConnectTimeoutHTTPSHandler)
+                )
+                handler.__dict__.pop("_check_hostname", None)
+                with opener.open(
+                    urllib.request.Request(f"https://127.0.0.1:{port}/shape"), timeout=5
+                ) as resp:
+                    results["bentuk 3.12+"] = (resp.status, "", "")
+            except Exception as exc:  # noqa: BLE001 - the message is the report
+                results["bentuk 3.12+"] = ("failed", f"{type(exc).__name__}: {exc}", "")
+            finally:
+                ix.close()
+
             proxy = _RawTunnelProxy()
             try:
                 httpclient._unverified_hosts.clear()
@@ -1584,9 +1606,11 @@ def p15_tls_fallback() -> tuple[str, bool]:
 
     direct_status, direct_error, remembered = results["langsung"]
     proxy_status, proxy_error, proxy_fact = results["lewat proxy"]
+    shape_status, shape_error, _ = results["bentuk 3.12+"]
     ok = (
         direct_status == "submitted"
         and proxy_status == "submitted"
+        and shape_status == 200
         and remembered == ["127.0.0.1"]
     )
     detail = (
@@ -1595,7 +1619,9 @@ def p15_tls_fallback() -> tuple[str, bool]:
         + f" [diingat: {','.join(remembered) or '-'}]; "
         f"lewat proxy tanpa kredensial: {proxy_status}"
         + (f" ({proxy_error})" if proxy_error else "")
-        + f" [{proxy_fact}]"
+        + f" [{proxy_fact}]; "
+        "handler tanpa check_hostname (bentuk 3.12+): "
+        + (str(shape_status) if shape_status == 200 else f"{shape_status} ({shape_error})")
     )
     return detail, ok
 

@@ -1581,3 +1581,43 @@ menerima `1.3.0`, perbaikan berikutnya wajib lewat `1.3.1`.
 
 Gate sesudah perubahan: **195 test OK**, ruff bersih, **35/35 verify PASS**
 (termasuk `P15` yang menjaga bug ini tidak kembali).
+
+### 24.5 Bug kedua, lebih parah: Python 3.12/3.13 tidak bisa HTTPS sama sekali
+
+Test baru di §24.1 merah di CI untuk 3.12 dan 3.13, dengan pesan yang tidak
+ambigu:
+
+```
+'_ConnectTimeoutHTTPSHandler' object has no attribute '_check_hostname'
+```
+
+`_ConnectTimeoutHTTPSHandler.https_open()` meneruskan `self._check_hostname`
+ke `do_open()`. Di 3.10/3.11 `urllib.request.HTTPSHandler.__init__` memang
+menyimpan atribut itu; **3.12 men-deprecate dan 3.13 menghapusnya** (kebijakan
+itu sekarang hanya ada di `SSLContext`). Karena baris itu dieksekusi sebelum
+satu byte pun dikirim, hasilnya:
+
+> di Python 3.12/3.13, **setiap** request https lewat transport default
+> (urllib, tanpa `--pool`) gagal dengan `AttributeError` — termasuk `check_url`
+> dan seluruh 429 situs https di daftar.
+
+Ini bukan regresi dari P12/P13; ia sudah ada sejak handler itu ditulis, dan
+lolos karena seluruh test HTTPS memakai `--pool` atau transport asyncio, di
+mana koneksinya dibuat sendiri tanpa subclass `urllib`.
+
+Perbaikannya satu `hasattr`: atribut hanya diteruskan bila memang ada, karena
+`SSLContext` sudah membawa kebijakan verifikasi (`tls_context(verify)`).
+Test-nya sengaja **menghapus atribut itu dengan tangan** lalu memanggil
+`https_open`, sehingga bentuk 3.12+ ikut teruji di 3.10/3.11/3.12/3.13.
+
+### 24.6 Kenapa bisa lolos begitu lama: log CI tidak terbaca, anotasi bisa
+
+Job log GitHub disimpan di host penyimpanan yang tidak bisa dijangkau dari
+jaringan saya, sedangkan **anotasi** dilayani API. Karena itu CI sekarang
+mengecho setiap baris `FAIL:`/`ERROR:` dari log test sebagai `::error::`
+(step "Turn test failures into annotations"), dan penyebab di §24.5 terbaca
+lewat `gh api …/check-runs/<id>/annotations`. Ini juga memperbaiki alur kerja
+sehari-hari: kegagalan test kini muncul langsung di tampilan PR.
+
+Status akhir setelah kedua perbaikan: **196 test**, ruff bersih, **35/35
+verify PASS**, CI 3.10–3.13 + job paket hijau.
